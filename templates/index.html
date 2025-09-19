@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Anti-Spoofing Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Real-time Anti-Spoofing Monitor</h1>
+    <div class="controls">
+        <button id="start-btn">Start Monitoring</button>
+        <button id="stop-btn">Stop Monitoring</button>
+    </div>
+    <div class="video-container">
+        <img id="video-feed" src="" width="640" height="480">
+    </div>
+
+    <script>
+        const videoFeed = document.getElementById('video-feed');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+
+        let isMonitoring = false;
+
+        function startMonitoring() {
+            if (!isMonitoring) {
+                fetch('/start_monitoring')
+                    .then(response => response.text())
+                    .then(data => {
+                        console.log(data);
+                        videoFeed.src = "{{ url_for('video_feed') }}";
+                        isMonitoring = true;
+                    });
+            }
+        }
+
+        function stopMonitoring() {
+            if (isMonitoring) {
+                fetch('/stop_monitoring')
+                    .then(response => response.text())
+                    .then(data => {
+                        console.log(data);
+                        videoFeed.src = ""; // Stop fetching new frames
+                        isMonitoring = false;
+                    });
+            }
+        }
+
+        startBtn.addEventListener('click', startMonitoring);
+        stopBtn.addEventListener('click', stopMonitoring);
+
+        // Start monitoring automatically when the page loads
+        window.onload = startMonitoring;
+    </script>
+</body>
+</html>

@@ -7,187 +7,75 @@ import cv2
 from ultralytics import YOLO
 from PIL import Image
 import numpy as np # Import numpy
+import os
+import datetime
+import face_recognition # Import face_recognition
+import pickle # Import pickle for caching
+import random # Import random for selecting subset of images
 
 app = Flask(__name__)
 
+# Determine device
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+print(f"Using device: {device}")
+
 # Global variable to control monitoring state
 monitoring_active = False
-ANTI_SPOOF_THRESHOLD = 0.8 # Adjusted threshold for anti-spoofing (increased for stricter classification)
+ANTI_SPOOF_THRESHOLD = 0.95 # Adjusted threshold for anti-spoofing (increased for stricter classification)
+
+# Directory to store frames
+OUTPUT_FRAMES_DIR = "/Users/kabirmathur/Documents/a_s/Kabir_Mathur"
+CACHE_FILE = os.path.join(OUTPUT_FRAMES_DIR, "face_encodings_cache.pkl") # Define cache file path
+os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
+
+# Face Recognition variables
+known_face_encodings = []
+known_face_names = []
+
+def load_known_faces(known_faces_dir):
+    global known_face_encodings, known_face_names
+
+    if os.path.exists(CACHE_FILE):
+        print("Loading known faces from cache...")
+        with open(CACHE_FILE, "rb") as f:
+            known_face_encodings, known_face_names = pickle.load(f)
+        print(f"Loaded {len(known_face_encodings)} known faces from cache.")
+        return
+
+    print("No cache found. Loading a random subset of known faces from directory...")
+    all_image_files = [f for f in os.listdir(known_faces_dir) if f.endswith((".jpg", ".png", ".jpeg"))]
+    # Select a random subset of up to 50 images, or fewer if less than 50 are available
+    selected_image_files = random.sample(all_image_files, min(len(all_image_files), 50))
+
+    for filename in selected_image_files:
+        image_path = os.path.join(known_faces_dir, filename)
+        image = face_recognition.load_image_file(image_path)
+        face_encodings = face_recognition.face_encodings(image)
+        if face_encodings:
+            known_face_encodings.append(face_encodings[0])
+            known_face_names.append(os.path.basename(known_faces_dir)) # Storing folder name as person's name
+    print(f"Loaded {len(known_face_encodings)} known faces from directory.")
+
+    # Save to cache
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump((known_face_encodings, known_face_names), f)
+    print(f"Saved {len(known_face_encodings)} known faces to cache.")
+
+# Load known faces from the Kabir_Mathur directory on startup
+with app.app_context(): # Run this within the Flask app context
+    load_known_faces(OUTPUT_FRAMES_DIR) # Using OUTPUT_FRAMES_DIR as the known faces directory
 
 # Load the anti-spoofing model
-model_path = '/Users/kabirmathur/Documents/a_s/antispoof_vit.pth'
+model_path = '/Users/kabirmathur/Documents/a_s/antispoof_vit_traced.pt'
 
-class GELU(nn.Module):
-    def forward(self, x):
-        return nn.functional.gelu(x)
-
-class PatchEmbed(nn.Module):
-    def __init__(self, img_size=(224, 224), patch_size=(16, 16), in_chans=3, embed_dim=192):
-        super().__init__()
-        num_patches = (img_size[0] // patch_size[0]) * (img_size[1] // patch_size[1])
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = num_patches
-
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-        self.norm = nn.Identity()
-
-    def forward(self, x):
-        x = self.proj(x)
-        B, C, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)
-        x = self.norm(x)
-        return x
-
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=GELU, drop=0.0):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.drop1 = nn.Dropout(drop)
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop2 = nn.Dropout(drop)
-        self.norm = nn.Identity()
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop1(x)
-        x = self.norm(x)
-        x = self.fc2(x)
-        x = self.drop2(x)
-        return x
-
-class Attention(nn.Module):
-    def __init__(self, dim, num_heads=3, qkv_bias=True, attn_drop=0.0, proj_drop=0.0):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = nn.Identity()
-        self.k_norm = nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.norm = nn.Identity()
-
-    def forward(self, x):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.norm(x)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=True, drop=0.0, attn_drop=0.0,
-                 drop_path=0.0, act_layer=GELU, norm_layer=nn.LayerNorm):
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.ls1 = nn.Identity()
-        self.drop_path1 = nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-        self.ls2 = nn.Identity()
-        self.drop_path2 = nn.Identity()
-
-    def forward(self, x):
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
-        return x
-
-class VisionTransformer(nn.Module):
-    def __init__(self, img_size=(224, 224), patch_size=(16, 16), in_chans=3, num_classes=2,
-                 embed_dim=192, depth=12, num_heads=3, mlp_ratio=4., qkv_bias=True,
-                 drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0.0):
-        super().__init__()
-        self.num_classes = num_classes
-        self.num_features = self.embed_dim = embed_dim
-
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-        num_patches = self.patch_embed.num_patches
-
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-        self.pos_drop = nn.Dropout(p=drop_rate)
-        self.patch_drop = nn.Identity()
-        self.norm_pre = nn.Identity()
-
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
-        self.blocks = nn.Sequential(*[
-            Block(
-                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
-                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i],
-                norm_layer=nn.LayerNorm)
-            for i in range(depth)])
-        self.norm = nn.LayerNorm(embed_dim)
-        self.fc_norm = nn.Identity()
-        self.head_drop = nn.Dropout(drop_rate)
-        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
-        torch.nn.init.trunc_normal_(self.pos_embed, std=.02)
-        torch.nn.init.trunc_normal_(self.cls_token, std=.02)
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            torch.nn.init.trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'pos_embed', 'cls_token'}
-
-    def get_classifier(self):
-        return self.head
-
-    def reset_classifier(self, num_classes, global_pool=''):
-        self.num_classes = num_classes
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
-    def forward_features(self, x):
-        B = x.shape[0]
-        x = self.patch_embed(x)
-
-        cls_token = self.cls_token.expand(B, -1, -1)
-        x = torch.cat((cls_token, x), dim=1)
-        x = self.pos_drop(x + self.pos_embed)
-        x = self.patch_drop(x)
-        x = self.norm_pre(x)
-        x = self.blocks(x)
-        x = self.norm(x)
-        x = self.fc_norm(x)
-        return x[:, 0]
-
-    def forward(self, x):
-        x = self.forward_features(x)
-        x = self.head_drop(x)
-        x = self.head(x)
-        return x
-
-anti_spoof_model = VisionTransformer(num_classes=2)
-anti_spoof_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+anti_spoof_model = torch.jit.load(model_path, map_location=torch.device('cpu'))
 anti_spoof_model.eval()
+anti_spoof_model = anti_spoof_model.to(torch.float32).to(device) # Convert to float32 and then move to device
 
 # Define preprocessing for the anti-spoofing model
 preprocess = transforms.Compose([
@@ -198,6 +86,8 @@ preprocess = transforms.Compose([
 
 # Initialize YOLO face detector
 yolo_model = YOLO('yolov8n.pt') # Reverted to generic YOLOv8n model for stability
+yolo_model.to(device)
+yolo_model = yolo_model.to(torch.float32) # Ensure YOLO model is also float32
 
 # Get class names from the YOLO model
 class_names = yolo_model.names
@@ -234,6 +124,9 @@ def video_feed():
 
 def generate_frames():
     global monitoring_active
+    frame_count = 0 # Initialize frame counter
+    PROCESS_EVERY_N_FRAMES = 1 # Process anti-spoofing and recognition every 1st frame
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Could not open video stream. Please check webcam permissions or if another application is using it.")
@@ -281,22 +174,60 @@ def generate_frames():
                 if face.size == 0:
                     continue
 
-                face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
-                face_pil = Image.fromarray(face_rgb)
-                input_tensor = preprocess(face_pil).unsqueeze(0)
+                # Only perform anti-spoofing and recognition on every Nth frame
+                if frame_count % PROCESS_EVERY_N_FRAMES == 0:
+                    # Preprocess the face for the anti-spoofing model
+                    face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+                    face_pil = Image.fromarray(face_rgb)
+                    input_tensor = preprocess(face_pil).unsqueeze(0)
 
-                with torch.no_grad():
-                    output = anti_spoof_model(input_tensor)
-                    # Corrected: Assuming output is [logit_real, logit_fake] and 'real' is index 0.
-                    probability = torch.sigmoid(output[:, 0]).item() # Take the first logit (index 0) and apply sigmoid
-                    is_real = probability > ANTI_SPOOF_THRESHOLD # Use configurable threshold
+                    # Predict using the anti-spoofing model
+                    with torch.no_grad():
+                        output = anti_spoof_model(input_tensor.to(device))
+                        # Corrected: Assuming output is [logit_real, logit_fake] and 'real' is index 0.
+                        probability = torch.sigmoid(output[:, 0]).item() # Take the first logit (index 0) and apply sigmoid
+                        is_real = probability > ANTI_SPOOF_THRESHOLD # Use configurable threshold
 
-                print(f"Face detected: Probability = {probability:.4f}, Is Real = {is_real}") # Debugging output
+                    print(f"Face detected: Probability = {probability:.4f}, Is Real = {is_real}") # Debugging output
 
-                # Only draw a green rectangle if the face is classified as real
-                if is_real:
-                    color = (0, 255, 0) # Green for real faces
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    if is_real:
+                        color = (0, 255, 0) # Green for real faces
+
+                        # Perform face recognition for the detected face
+                        face_image_for_recognition = frame[y1:y2, x1:x2]
+                        # Convert from BGR to RGB (face_recognition expects RGB)
+                        face_image_for_recognition_rgb = cv2.cvtColor(face_image_for_recognition, cv2.COLOR_BGR2RGB)
+                        
+                        face_locations = face_recognition.face_locations(face_image_for_recognition_rgb)
+                        if face_locations:
+                            # Assuming only one face per crop for recognition purposes
+                            face_encoding = face_recognition.face_encodings(face_image_for_recognition_rgb, face_locations)[0]
+
+                            # Compare with known faces
+                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
+                            identified_name = "Unknown" # Initialize identified_name
+
+                            if True in matches:
+                                first_match_index = matches.index(True)
+                                identified_name = known_face_names[first_match_index]
+                            
+                            # Print the identified name
+                            print(f"Identified Face: {identified_name}")
+                            cv2.putText(frame, identified_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                else:
+                    # If not processing this frame for anti-spoofing/recognition, just draw YOLO box if needed
+                    # No box is drawn for fake faces as per user request
+                    pass
+
+        # Increment frame count
+        frame_count += 1
+
+        # # Save the processed frame (Disabled for performance)
+        # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # frame_filename = os.path.join(OUTPUT_FRAMES_DIR, f"frame_{timestamp}.jpg")
+        # cv2.imwrite(frame_filename, frame)
 
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()

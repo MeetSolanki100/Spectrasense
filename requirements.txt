@@ -1,0 +1,15 @@
+torch 
+torchvision 
+torchaudio --index-url https://download.pytorch.org/whl/cu118
+transformers 
+accelerate
+openai-whisper
+pyaudio
+numpy 
+scipy
+ollama  # For local LLM management
+pyttsx3
+gtts
+pygame
+pydub
+ffmpeg-python

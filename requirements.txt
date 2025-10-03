@@ -13,3 +13,9 @@ gtts
 pygame
 pydub
 ffmpeg-python
+elevenlabs
+python-dotenv
+chromadb 
+sentence-transformers 
+transformers 
+torch

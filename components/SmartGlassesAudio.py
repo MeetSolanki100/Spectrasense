@@ -1,6 +1,6 @@
 import pyaudio
 import wave
-
+from playsound import playsound
 class SmartGlassesAudio:
     def __init__(self, device_name=None):
         self.p = pyaudio.PyAudio()
@@ -19,23 +19,24 @@ class SmartGlassesAudio:
     
     def play_audio_to_glasses(self, wav_file):
         """Play audio file to smart glasses"""
-        wf = wave.open(wav_file, 'rb')
+        playsound(wav_file)
+        # wf = wave.open(wav_file, 'rb')
         
-        stream = self.p.open(
-            format=self.p.get_format_from_width(wf.getsampwidth()),
-            channels=wf.getnchannels(),
-            rate=wf.getframerate(),
-            output=True,
-            output_device_index=self.device_index
-        )
+        # stream = self.p.open(
+        #     format=self.p.get_format_from_width(wf.getsampwidth()),
+        #     channels=wf.getnchannels(),
+        #     rate=wf.getframerate(),
+        #     output=True,
+        #     output_device_index=self.device_index
+        # )
         
-        chunk = 1024
-        data = wf.readframes(chunk)
+        # chunk = 1024
+        # data = wf.readframes(chunk)
         
-        while data:
-            stream.write(data)
-            data = wf.readframes(chunk)
+        # while data:
+        #     stream.write(data)
+        #     data = wf.readframes(chunk)
         
-        stream.stop_stream()
-        stream.close()
-        wf.close()
+        # stream.stop_stream()
+        # stream.close()
+        # wf.close()

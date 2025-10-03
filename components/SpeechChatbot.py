@@ -6,6 +6,7 @@ from components.SpeechToText import SpeechToText
 from components.LocalLLM import LocalLLM
 from components.SmartGlassesAudio import SmartGlassesAudio
 from components.TextToSpeech import TextToSpeech
+from components.VectorDB import RAGChatbot
 class SpeechChatbot:
     def __init__(self, 
                  whisper_model="base",
@@ -16,8 +17,7 @@ class SpeechChatbot:
         self.llm = LocalLLM(llm_model)
         self.tts = TextToSpeech()
         self.glasses = SmartGlassesAudio(glasses_device)
-        
-        self.conversation_history = []
+        self.vectordb = RAGChatbot()
         self.is_listening = False
     
     def listen_continuously(self):
@@ -38,7 +38,7 @@ class SpeechChatbot:
                     response = self.process_conversation(user_input)
                     print(f"Assistant: {response}")
                     # Use a unique filename for each response
-                    audio_filename = f"output_{uuid.uuid4().hex}.wav"
+                    audio_filename = f"output_{uuid.uuid4().hex}.mp3"
                     audio_file = self.tts.synthesize_speech(response, output_file=audio_filename)
                     self.glasses.play_audio_to_glasses(audio_file)
                     # Optionally, remove the file after playback
@@ -57,26 +57,21 @@ class SpeechChatbot:
                 continue
     
     def process_conversation(self, user_input):
-        """Process user input and generate response"""
-        # Add context from conversation history
-        context = ""
-        if self.conversation_history:
-            recent_history = self.conversation_history[-3:]  # Last 3 exchanges
-            for exchange in recent_history:
-                context += f"User: {exchange['user']}\nAssistant: {exchange['assistant']}\n"
-        
-        # Create prompt with context
-        prompt = f"{context}User: {user_input}\nAssistant:"
-        
+        """Process user input and generate response using vector database for context"""
+        # Get prompt with relevant context from vector DB
+        system_prompt = "You are a helpful voice assistant. Be concise and clear in your responses."
+        prompt, contexts = self.vectordb.build_prompt_with_context(user_input, system_prompt)
+        print("Prompt sent to LLM:")
+        print(prompt)
+        # print()
+        print("context given:")
+        for ctx in contexts:
+            print(f"- {ctx['content']} (Distance: {ctx.get('distance', 'N/A')})")
         # Generate response
         response = self.llm.generate_response(prompt, max_tokens=100)
         
-        # Store in conversation history
-        self.conversation_history.append({
-            "user": user_input,
-            "assistant": response,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Store conversation in vector DB
+        self.vectordb.store_conversation(user_input, response)
         
         return response
     
@@ -96,9 +91,9 @@ class SpeechChatbot:
             response = self.process_conversation(user_input)
             print(f"Response: {response}")
             # Use a unique filename for each response
-            audio_filename = f"output_{uuid.uuid4().hex}.wav"
+            audio_filename = f"output_{uuid.uuid4().hex}.mp3"
             audio_file = self.tts.synthesize_speech(response, output_file=audio_filename)
-            self.glasses.play_audio_to_glasses(audio_file)
+            self.glasses.play_audio_to_glasses(audio_filename)
             try:
                 os.remove(audio_file)
             except Exception:

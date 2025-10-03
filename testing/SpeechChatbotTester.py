@@ -38,13 +38,12 @@ class SpeechChatbot:
                     response = self.process_conversation(user_input)
                     print(f"Assistant: {response}")
                     # Use a unique filename for each response
-                    audio_filename = f"output_{uuid.uuid4().hex}.wav"
-                    print(audio_filename)
+                    audio_filename = f"output_{uuid.uuid4().hex}.mp3"
                     audio_file = self.tts.synthesize_speech(response, output_file=audio_filename)
                     self.glasses.play_audio_to_glasses(audio_file)
                     # Optionally, remove the file after playback
                     try:
-                        os.remove(audio_file)
+                        os.remove(audio_filename)
                     except Exception:
                         pass
                 time.sleep(1.5)
@@ -97,11 +96,13 @@ class SpeechChatbot:
             response = self.process_conversation(user_input)
             print(f"Response: {response}")
             # Use a unique filename for each response
-            audio_filename = f"output_{uuid.uuid4().hex}.wav"
+            audio_filename = f"output_{uuid.uuid4().hex}.mp3"
             audio_file = self.tts.synthesize_speech(response, output_file=audio_filename)
-            self.glasses.play_audio_to_glasses(audio_file)
+            self.glasses.play_audio_to_glasses(audio_filename)
+            
             try:
                 os.remove(audio_file)
             except Exception:
+                print("Could not delete file")
                 pass
         return user_input, response

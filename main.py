@@ -4,7 +4,7 @@ def main():
     # Initialize chatbot
     chatbot = SpeechChatbot(
         whisper_model="base",  # or "small", "medium", "large"
-        llm_model="mistral:7b",  # or other Ollama models
+        llm_model="llama3.1:8b",  # or other Ollama models
         glasses_device="Smart Glasses"  # Name of your audio device
     )
     

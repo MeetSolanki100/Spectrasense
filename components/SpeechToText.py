@@ -2,12 +2,10 @@ import whisper
 import pyaudio
 import wave
 import numpy as np
-
 class SpeechToText:
     def __init__(self, model_size="base"):
-        # Load Whisper model (base, small, medium, large)
-        self.model = whisper.load_model(model_size)
-    
+        # Load Whisper model on CPU
+        self.model = whisper.load_model(model_size, device="cpu", download_root="./models/whisper", in_memory=True)
     def record_audio(self, duration=5, sample_rate=16000):
         """Record audio from microphone"""
         p = pyaudio.PyAudio()
@@ -38,5 +36,19 @@ class SpeechToText:
     
     def transcribe_realtime(self, audio_data):
         """Convert audio array to text"""
+        # result = self.model.transcribe(audio_data , fp16=False , language='hn' , task='transcribe' , temperature=0,logprob_threshold=-1.0, no_speech_threshold=0.6)
+        # return result["text"]
         result = self.model.transcribe(audio_data)
         return result["text"]
+        model = self.model
+        mel = whisper.log_mel_spectrogram(audio_data, n_mels=model.dims.n_mels).to(model.device)
+
+        # detect the spoken language
+        _, probs = model.detect_language(mel)
+        print(f"Detected language: {max(probs, key=probs.get)}")
+
+        # decode the audio
+        options = whisper.DecodingOptions()
+        result = whisper.decode(model, mel, options)
+        print(f"Transcription: {result.text}")
+        return result.text

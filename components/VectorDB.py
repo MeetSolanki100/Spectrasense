@@ -18,7 +18,7 @@ class RAGChatbot:
         
         # Load embedding model (lightweight and effective)
         print("Loading embedding model...")
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedding_model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
         
         # Get or create collection
         self.collection = self.client.get_or_create_collection(
@@ -76,6 +76,8 @@ class RAGChatbot:
         if results['documents']:
             for i, doc in enumerate(results['documents'][0]):
                 distance = results['distances'][0][i] if 'distances' in results else None
+                if distance is not None and distance > 0.75:  # Threshold to filter out less relevant contexts
+                    continue
                 contexts.append({
                     'content': doc,
                     'metadata': results['metadatas'][0][i],
@@ -84,7 +86,7 @@ class RAGChatbot:
         
         return contexts
     
-    def build_prompt_with_context(self, user_query, system_prompt="You are a helpful assistant.", top_k=3):
+    def build_prompt_with_context(self, user_query, system_prompt="You are a helpful assistant.", top_k=2):
         """Build a complete prompt with retrieved context for the LLM"""
         
         # Retrieve relevant contexts

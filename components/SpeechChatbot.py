@@ -7,6 +7,7 @@ from components.LocalLLM import LocalLLM
 from components.SmartGlassesAudio import SmartGlassesAudio
 from components.TextToSpeech import TextToSpeech
 from components.VectorDB import RAGChatbot
+from components.Translate import Translate
 class SpeechChatbot:
     def __init__(self, 
                  whisper_model="base",
@@ -19,6 +20,7 @@ class SpeechChatbot:
         self.glasses = SmartGlassesAudio(glasses_device)
         self.vectordb = RAGChatbot()
         self.is_listening = False
+        self.ts = Translate()
     
     def listen_continuously(self):
         """Continuous listening mode"""
@@ -28,18 +30,20 @@ class SpeechChatbot:
                 # Record audio
                 print("speak now [lmao]")  
                 audio_data = self.stt.record_audio(duration=5)
-                
                 # Convert to text
                 user_input = self.stt.transcribe_realtime(audio_data)
-                
+                if "stop listening" in user_input.lower():
+                    print("Stopping listening as per user request.")
+                    break
                 if user_input.strip() and len(user_input.strip()) > 3:
                     print(f"User: {user_input}")
                     # Generate LLM response
                     response = self.process_conversation(user_input)
-                    print(f"Assistant: {response}")
+                    translated = self.ts.translate_and_transliterate(response, target_lang_code='hi')
+                    print(f"Assistant: {translated}")
                     # Use a unique filename for each response
                     audio_filename = f"output_{uuid.uuid4().hex}.mp3"
-                    audio_file = self.tts.synthesize_speech(response, output_file=audio_filename)
+                    audio_file = self.tts.synthesize_speech(translated, output_file=audio_filename)
                     self.glasses.play_audio_to_glasses(audio_file)
                     # Optionally, remove the file after playback
                     try:
@@ -59,7 +63,7 @@ class SpeechChatbot:
     def process_conversation(self, user_input):
         """Process user input and generate response using vector database for context"""
         # Get prompt with relevant context from vector DB
-        system_prompt = "You are a helpful voice assistant. Be concise and clear in your responses."
+        system_prompt = "You are a helpful voice assistant. Be concise and clear in your responses. Answer in 2-3 lines only"
         prompt, contexts = self.vectordb.build_prompt_with_context(user_input, system_prompt)
         print("Prompt sent to LLM:")
         print(prompt)

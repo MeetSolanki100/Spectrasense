@@ -1,2 +1,18 @@
 chatbot_env
+
+# Model files
 models/whisper/
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# Audio files
+*.wav
+*.mp3
+*.ogg
+
+# Cache files
+__pycache__/
+*.py[cod]
+*$py.class

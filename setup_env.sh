@@ -33,13 +33,20 @@ pip install --upgrade pip
 
 # Install PyTorch for Jetson Nano
 echo "Installing PyTorch for Jetson Nano..."
-# For JetPack 5.x (Ubuntu 20.04)
+# For JetPack 6.x and newer versions
 if command -v nvcc &> /dev/null; then
     NVCC_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]\+\.[0-9]\+\).*/\1/')
     echo "Detected CUDA version: $NVCC_VERSION"
     
-    if [[ $NVCC_VERSION == 11.4* ]]; then
+    if [[ $NVCC_VERSION == 12.* ]]; then
+        echo "Installing PyTorch for CUDA 12.x (JetPack 6.x)..."
+        # For CUDA 12.x, we'll use the latest PyTorch with CUDA 12.1 support
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    elif [[ $NVCC_VERSION == 11.4* ]]; then
         echo "Installing PyTorch for CUDA 11.4 (JetPack 5.0/5.1)..."
+        pip install torch==1.12.0 torchvision==0.13.0 --extra-index-url https://download.pytorch.org/whl/cu113
+    elif [[ $NVCC_VERSION == 11.0* ]]; then
+        echo "Installing PyTorch for CUDA 11.0 (JetPack 5.0)..."
         pip install torch==1.12.0 torchvision==0.13.0 --extra-index-url https://download.pytorch.org/whl/cu113
     elif [[ $NVCC_VERSION == 10.2* ]]; then
         echo "Installing PyTorch for CUDA 10.2 (JetPack 4.6)..."
@@ -52,7 +59,7 @@ if command -v nvcc &> /dev/null; then
         cd ..
         rm -rf torchvision
     else
-        echo "Unsupported CUDA version. Installing CPU-only PyTorch..."
+        echo "Unsupported CUDA version $NVCC_VERSION. Installing CPU-only PyTorch..."
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
     fi
 else

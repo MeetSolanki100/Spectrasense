@@ -4,7 +4,7 @@ This guide will help you set up and run the Vision Encoder application on a Jets
 
 ## Prerequisites
 
-- Jetson Nano with JetPack 4.6+ or 5.x installed
+- Jetson Nano with JetPack 4.6+, 5.x, or 6.x installed
 - At least 32GB SD card (64GB recommended)
 - USB camera or CSI camera
 - Internet connection for initial setup
@@ -63,12 +63,17 @@ sudo apt-get install -y build-essential cmake git wget
 
 ### 2. PyTorch Installation
 
-**For JetPack 5.x (Ubuntu 20.04):**
+**For JetPack 6.x (CUDA 12.x):**
+```bash
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+**For JetPack 5.x (CUDA 11.x):**
 ```bash
 pip3 install torch==1.12.0 torchvision==0.13.0 --extra-index-url https://download.pytorch.org/whl/cu113
 ```
 
-**For JetPack 4.6 (Ubuntu 18.04):**
+**For JetPack 4.6 (CUDA 10.2):**
 ```bash
 wget https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.10.0-cp36-cp36m-linux_aarch64.whl
 pip3 install torch-1.10.0-cp36-cp36m-linux_aarch64.whl
@@ -140,7 +145,11 @@ If using a USB camera, it will be detected as index 1 or higher.
 
 4. **PyTorch Installation Issues:**
    - Verify JetPack version: `cat /etc/nv_tegra_release`
-   - Use the correct PyTorch wheel for your JetPack version
+   - Check CUDA version: `nvcc --version`
+   - Use the correct PyTorch wheel for your JetPack/CUDA version:
+     - CUDA 12.6 (JetPack 6.x): `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121`
+     - CUDA 11.x (JetPack 5.x): Use cu113 index
+     - CUDA 10.2 (JetPack 4.6): Use pre-built wheels
 
 ### Performance Monitoring
 

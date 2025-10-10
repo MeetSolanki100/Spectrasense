@@ -14,15 +14,15 @@ sudo apt-get update
 sudo apt-get install -y build-essential cmake libopenblas-dev libjpeg-dev libpython3-dev python3-pip
 
 # 2. Install PyTorch
-echo "[INFO] Installing PyTorch v1.10.0 for Jetson..."
-# URL for PyTorch 1.10.0 for JetPack 4.6.x (Python 3.6)
+echo "[INFO] Installing PyTorch v1.10.2 for Jetson..."
+# URL for PyTorch 1.10.2 for JetPack 4.6.x (Python 3.6)
 # For other versions, see: https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
-wget https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.10.0-cp36-cp36m-linux_aarch64.whl -O torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+wget https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.10.2-cp36-cp36m-linux_aarch64.whl -O torch-1.10.2-cp36-cp36m-linux_aarch64.whl
 
 sudo apt-get install -y libopenblas-base libopenmpi-dev
 pip3 install Cython
-pip3 install numpy torch-1.10.0-cp36-cp36m-linux_aarch64.whl
-rm torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+pip3 install numpy torch-1.10.2-cp36-cp36m-linux_aarch64.whl
+rm torch-1.10.2-cp36-cp36m-linux_aarch64.whl
 
 # 3. Install TorchVision
 echo "[INFO] Building and installing TorchVision v0.11.1 from source..."

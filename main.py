@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 import time
 import threading
 import numpy as np
+import platform
 
 # --- Configuration ---
 UPLOAD_FOLDER = 'static/uploads/'
@@ -24,34 +25,98 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- 1. Initialize Models ---
+def get_optimal_device():
+    """Determines the optimal device for inference on Jetson Nano."""
+    print("Detecting optimal device...")
+    
+    # Check if we're on Jetson Nano
+    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
+    
+    if is_jetson:
+        print("Jetson Nano detected!")
+        if torch.cuda.is_available():
+            # Check CUDA memory availability on Jetson
+            try:
+                torch.cuda.empty_cache()
+                # Test CUDA allocation
+                test_tensor = torch.zeros(1).cuda()
+                del test_tensor
+                torch.cuda.empty_cache()
+                device = "cuda"
+                print(f"Using CUDA on Jetson Nano. GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+            except RuntimeError as e:
+                print(f"CUDA allocation failed: {e}. Falling back to CPU.")
+                device = "cpu"
+        else:
+            device = "cpu"
+    else:
+        # Non-Jetson system
+        if torch.backends.mps.is_available():
+            device = "mps"
+        elif torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
+    
+    print(f"Selected device: {device}")
+    return device
+
 def initialize_models():
     """Loads all the required models and returns them."""
     print("Initializing models...")
-    yolo_model = YOLO('yolov8x.pt') # This will automatically download the model if not present
     
-    # Initialize BLIP model
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
+    # Use smaller YOLO model for Jetson Nano to save memory
+    device = get_optimal_device()
+    if device == "cpu" or platform.machine() == 'aarch64':
+        print("Using YOLOv8s (smaller model) for better performance on Jetson Nano")
+        yolo_model = YOLO('yolov8s.pt')
     else:
-        device = "cpu"
-    print(f"Using device: {device}")
-
+        yolo_model = YOLO('yolov8x.pt')
+    
+    # Initialize BLIP model with memory optimization
     blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL_NAME)
-    blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL_NAME).to(device)
+    
+    # Load BLIP model with memory optimization for Jetson
+    if device == "cuda" and platform.machine() == 'aarch64':
+        # Jetson Nano CUDA optimization
+        blip_model = BlipForConditionalGeneration.from_pretrained(
+            BLIP_MODEL_NAME,
+            torch_dtype=torch.float16,  # Use half precision to save memory
+            low_cpu_mem_usage=True
+        ).to(device)
+        # Enable memory efficient attention if available
+        if hasattr(blip_model, 'gradient_checkpointing_enable'):
+            blip_model.gradient_checkpointing_enable()
+    else:
+        blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL_NAME).to(device)
 
     print("Models initialized successfully.")
-    return yolo_model, blip_processor, blip_model
+    return yolo_model, blip_processor, blip_model, device
 
-yolo_model, blip_processor, blip_model = initialize_models()
+yolo_model, blip_processor, blip_model, device = initialize_models()
 
 # --- Global variables for real-time analysis ---
 video_camera = None # Initialize as None
 last_analysis = {"objects": [], "description": "Initializing..."}
 analysis_lock = threading.Lock()
-FRAME_INTERVAL_FOR_ANALYSIS = 20 # Analyze one frame every 20 frames for more frequent updates
+
+# Optimize frame analysis interval for Jetson Nano
+is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
+if is_jetson:
+    FRAME_INTERVAL_FOR_ANALYSIS = 30  # Analyze less frequently on Jetson to save resources
+    print("Jetson Nano detected - using optimized frame analysis interval")
+else:
+    FRAME_INTERVAL_FOR_ANALYSIS = 20
+
 frame_counter = 0
+
+# Jetson-specific performance settings
+if is_jetson:
+    # Set optimal thread count for Jetson Nano
+    torch.set_num_threads(4)
+    # Enable memory efficient mode
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
 
 # --- 2. Image Processing Functions ---
 def allowed_file(filename):
@@ -63,6 +128,10 @@ def analyze_frame(frame):
     print("Analyzing a new frame...")
 
     try:
+        # Clear CUDA cache before processing (important for Jetson)
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
         # --- Detailed Object Detection ---
         results = yolo_model(frame, verbose=False)
         detected_objects = []
@@ -74,12 +143,25 @@ def analyze_frame(frame):
                     class_name = yolo_model.names[class_id]
                     detected_objects.append(f"{class_name} (Confidence: {confidence:.2f})")
 
-        # --- Image Captioning with BLIP ---
+        # --- Image Captioning with BLIP (with memory optimization) ---
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
+        
+        # Resize image for Jetson Nano to save memory
+        if is_jetson:
+            pil_image = pil_image.resize((320, 240), Image.Resampling.LANCZOS)
+        
         inputs = blip_processor(pil_image, return_tensors="pt").to(blip_model.device)
-        out = blip_model.generate(**inputs)
-        caption = blip_processor.decode(out[0], skip_special_tokens=True)
+        
+        # Use optimized generation for Jetson
+        with torch.no_grad():  # Disable gradients to save memory
+            if is_jetson and device == "cuda":
+                # Use half precision on Jetson for memory efficiency
+                inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}
+                blip_model.half()
+            
+            out = blip_model.generate(**inputs, max_length=50, num_beams=3)  # Limit generation for speed
+            caption = blip_processor.decode(out[0], skip_special_tokens=True)
 
         # --- Format the analysis into a detailed description ---
         description = format_analysis_as_description(caption, detected_objects)
@@ -89,8 +171,15 @@ def analyze_frame(frame):
             last_analysis["objects"] = detected_objects # Also update the objects list
         print(f"Detailed analysis updated.")
 
+        # Clear CUDA cache after processing
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
     except Exception as e:
         print(f"Error during frame analysis: {e}")
+        # Clear cache on error
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
 def format_analysis_as_description(caption, objects):
     """Formats the analysis into a descriptive list of observations."""
@@ -217,12 +306,57 @@ def video_feed():
     """Video streaming route."""
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+def get_camera_config():
+    """Get optimal camera configuration for Jetson Nano."""
+    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
+    
+    if is_jetson:
+        # Jetson Nano camera configuration
+        # Try CSI camera first (common on Jetson), then USB
+        camera_configs = [
+            {'index': 0, 'width': 640, 'height': 480, 'fps': 30},  # CSI camera
+            {'index': 1, 'width': 640, 'height': 480, 'fps': 30},  # USB camera
+        ]
+    else:
+        # Standard configuration for other systems
+        camera_configs = [
+            {'index': 0, 'width': 640, 'height': 480, 'fps': 30}
+        ]
+    
+    return camera_configs
+
 @app.route('/start_camera')
 def start_camera():
     global video_camera
     if video_camera is None or not video_camera.isOpened():
-        video_camera = cv2.VideoCapture(0)
-    return jsonify(status="Camera started")
+        camera_configs = get_camera_config()
+        
+        for config in camera_configs:
+            try:
+                video_camera = cv2.VideoCapture(config['index'])
+                if video_camera.isOpened():
+                    # Set camera properties for Jetson Nano optimization
+                    video_camera.set(cv2.CAP_PROP_FRAME_WIDTH, config['width'])
+                    video_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config['height'])
+                    video_camera.set(cv2.CAP_PROP_FPS, config['fps'])
+                    
+                    # Jetson-specific optimizations
+                    if platform.machine() == 'aarch64':
+                        video_camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
+                        video_camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+                    
+                    print(f"Camera started with config: {config}")
+                    return jsonify(status="Camera started", config=config)
+                else:
+                    video_camera.release()
+                    video_camera = None
+            except Exception as e:
+                print(f"Failed to start camera {config['index']}: {e}")
+                continue
+        
+        return jsonify(status="Failed to start camera", error="No working camera found")
+    
+    return jsonify(status="Camera already running")
 
 @app.route('/stop_camera')
 def stop_camera():
@@ -318,4 +452,10 @@ def analyze_video(video_path):
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    app.run(debug=True, port=5002)
+    # Jetson Nano optimized Flask configuration
+    if is_jetson:
+        print("Starting Flask app optimized for Jetson Nano...")
+        # Use threaded mode for better performance on Jetson
+        app.run(host='0.0.0.0', port=5002, threaded=True, debug=False)
+    else:
+        app.run(debug=True, port=5002)

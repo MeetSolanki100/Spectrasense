@@ -1,11 +1,22 @@
 import cv2
 from ultralytics import YOLO
 import numpy as np
+import torch
+import platform
 
 def load_yolo_model():
-    """Initialize and return YOLO model"""
+    """Initialize and return YOLO model optimized for Jetson Nano"""
     print("Loading YOLOv8 model...")
-    model = YOLO('yolov8s.pt')  # Using the existing YOLOv8s model
+    
+    # Check if we're on Jetson Nano
+    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
+    
+    if is_jetson:
+        print("Jetson Nano detected - using YOLOv8s for optimal performance")
+        model = YOLO('yolov8s.pt')  # Smaller model for Jetson Nano
+    else:
+        model = YOLO('yolov8s.pt')  # Using the existing YOLOv8s model
+    
     return model
 
 def detect_objects(frame, yolo_model):
@@ -59,8 +70,23 @@ def main():
     print("Loading YOLOv8 model...")
     yolo_model = load_yolo_model()
     
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
+    # Check if we're on Jetson Nano
+    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
+    
+    # Initialize webcam with Jetson-specific configuration
+    if is_jetson:
+        print("Configuring camera for Jetson Nano...")
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            # Jetson-specific camera settings
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+    else:
+        cap = cv2.VideoCapture(0)
+    
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return

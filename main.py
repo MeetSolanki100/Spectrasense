@@ -12,6 +12,20 @@ import threading
 import numpy as np
 import platform
 
+# Optional Jetson-specific imports
+try:
+    import jetson_stats
+    JETSON_STATS_AVAILABLE = True
+except ImportError:
+    JETSON_STATS_AVAILABLE = False
+
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    PYNVML_AVAILABLE = True
+except ImportError:
+    PYNVML_AVAILABLE = False
+
 # --- Configuration ---
 UPLOAD_FOLDER = 'static/uploads/'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}

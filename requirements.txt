@@ -1,4 +1,4 @@
-# Jetson Nano compatible package versions
+# Core package versions (compatible with both desktop and Jetson Nano)
 ultralytics>=8.0.0
 easyocr>=1.6.0
 torch>=1.10.0
@@ -13,6 +13,7 @@ Flask>=2.0.0
 requests>=2.25.0
 sentencepiece>=0.1.96
 optimum>=1.8.0
-# Additional Jetson-specific packages
-jetson-stats
-pynvml
+
+# Jetson-specific packages (only install on Jetson devices)
+# jetson-stats  # Uncomment and install manually on Jetson: pip install jetson-stats
+# pynvml       # Uncomment and install manually on Jetson: pip install pynvml

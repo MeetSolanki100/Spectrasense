@@ -64,9 +64,13 @@ fi
 echo "Installing other requirements..."
 pip install -r requirements.txt
 
-# Install Jetson-specific packages
-echo "Installing Jetson-specific packages..."
-pip install jetson-stats pynvml
+# Install Jetson-specific packages (only on Jetson devices)
+if [[ $(uname -m) == "aarch64" ]]; then
+    echo "Installing Jetson-specific packages..."
+    pip install jetson-stats pynvml || echo "Warning: Failed to install Jetson-specific packages. This is normal on non-Jetson systems."
+else
+    echo "Skipping Jetson-specific packages (not on Jetson device)"
+fi
 
 # Set up CUDA environment variables
 echo "Setting up CUDA environment variables..."

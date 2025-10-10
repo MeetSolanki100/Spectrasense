@@ -1,0 +1,15 @@
+ultralytics
+easyocr
+torch
+torchvision
+transformers
+Pillow
+opencv-python-headless
+accelerate
+tiktoken
+einops
+transformers_stream_generator
+Flask
+requests
+sentencepiece
+optimum

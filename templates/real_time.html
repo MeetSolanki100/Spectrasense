@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vision Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Real-Time Environmental Analysis</h1>
+        <p>Control your webcam and see the real-time analysis.</p>
+
+        <div class="controls">
+            <button id="start-camera">Start Camera</button>
+            <button id="stop-camera">Stop Camera</button>
+        </div>
+
+        <div class="results">
+            <div class="video-container">
+                <h3>Live Feed</h3>
+                <img src="{{ url_for('video_feed') }}" alt="Video Feed" id="video-feed">
+            </div>
+
+            <div class="analysis-details">
+                <h3>Room Description</h3>
+                <pre id="description">Camera is off. Press 'Start Camera' to begin analysis.</pre>
+
+                            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateAnalysis() {
+            fetch('/analysis_data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('description').textContent = data.description;
+                })
+                .catch(error => console.error('Error fetching analysis data:', error));
+        }
+
+        // Update the analysis every 3 seconds
+        let analysisInterval = setInterval(updateAnalysis, 3000);
+
+        document.getElementById('start-camera').addEventListener('click', () => {
+            fetch('/start_camera')
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.status);
+                    document.getElementById('video-feed').style.display = 'block';
+                    if (!analysisInterval) {
+                        analysisInterval = setInterval(updateAnalysis, 3000);
+                    }
+                });
+        });
+
+        document.getElementById('stop-camera').addEventListener('click', () => {
+            fetch('/stop_camera')
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data.status);
+                    document.getElementById('video-feed').style.display = 'none';
+                    clearInterval(analysisInterval);
+                    analysisInterval = null; // Clear the interval ID
+                });
+        });
+
+        // Initially hide the video feed until started
+        document.getElementById('video-feed').style.display = 'none';
+
+    </script>
+    <a href="/" class="button">Back to Home</a>
+    </div>
+</body>
+</html>

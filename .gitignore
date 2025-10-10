@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Large model files
+*.pt
+*.ttf
+
+# OS-specific files
+.DS_Store
+
+# Backup git directory
+.git_bak/
+
+# Offload directory
+offload/

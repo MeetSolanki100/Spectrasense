@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Analysis Results</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Video Analysis Results</h1>
+        <a href="{{ url_for('welcome') }}">Back to Home</a>
+
+        <div class="results">
+            <div class="video-container">
+                <h3>Processed Video</h3>
+                <video controls width="100%">
+                    <source src="{{ url_for('static', filename='uploads/' + video_path) }}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+
+            <div class="analysis-details">
+                <h3>Detected Objects</h3>
+                <ul>
+                    {% for obj in analysis.objects %}
+                        <li>{{ obj }}</li>
+                    {% endfor %}
+                </ul>
+
+                <h3>Environmental Description</h3>
+                <ul>
+                    {% for item in analysis.description %}
+                        <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

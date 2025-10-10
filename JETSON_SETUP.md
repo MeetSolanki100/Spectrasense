@@ -11,17 +11,33 @@ This guide will help you set up and run the Vision Encoder application on a Jets
 
 ## Quick Setup
 
+### For Jetson Nano:
 1. **Clone and navigate to the project directory:**
    ```bash
    git clone <your-repo-url>
    cd vision_encoder
    ```
 
-2. **Run the setup script:**
+2. **Run the Jetson setup script:**
    ```bash
    chmod +x setup_env.sh
    ./setup_env.sh
    ```
+
+### For Desktop/Development Systems:
+1. **Clone and navigate to the project directory:**
+   ```bash
+   git clone <your-repo-url>
+   cd vision_encoder
+   ```
+
+2. **Run the core installation script:**
+   ```bash
+   chmod +x install_core.sh
+   ./install_core.sh
+   ```
+
+**Note:** The `jetson-stats` package will fail to install on non-Jetson systems (like macOS, Windows, or x86 Linux). This is expected and normal. Use `install_core.sh` for development on your desktop system.
 
 3. **Optimize Jetson Nano performance:**
    ```bash

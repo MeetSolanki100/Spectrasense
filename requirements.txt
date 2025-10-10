@@ -1,8 +1,8 @@
 # Core package versions (compatible with both desktop and Jetson Nano)
 ultralytics>=8.0.0
 easyocr>=1.6.0
-torch>=1.10.0
-torchvision>=0.11.0
+torch>=2.0.0
+torchvision>=0.15.0
 transformers>=4.20.0
 Pillow>=8.3.0
 opencv-python-headless>=4.5.0
@@ -17,3 +17,8 @@ optimum>=1.8.0
 # Jetson-specific packages (only install on Jetson devices)
 # jetson-stats  # Uncomment and install manually on Jetson: pip install jetson-stats
 # pynvml       # Uncomment and install manually on Jetson: pip install pynvml
+
+# CUDA 12.x compatibility notes:
+# - For Jetson with CUDA 12.x: PyTorch will be installed via setup scripts
+# - For desktop: PyTorch will use default installation (CPU/MPS/CUDA)
+# - Minimum PyTorch 2.0.0 required for full CUDA 12.x support

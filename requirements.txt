@@ -1,7 +1,9 @@
-flask
-ultralytics
-opencv-python
-torch
-torchvision
-Pillow
-face_recognition
+# On Jetson Nano, install PyTorch, TorchVision, OpenCV, and dlib (for face_recognition)
+# by running the setup_jetson.sh script.
+# These packages have been removed from this file as they require a specific installation.
+
+flask>=2.0.1
+ultralytics>=8.0.0
+Pillow>=8.3.1
+geocoder>=1.38.1
+numpy>=1.19.5

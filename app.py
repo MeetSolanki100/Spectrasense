@@ -1,5 +1,4 @@
-
-from flask import Flask, render_template, Response
+from flask import Flask, render_template, Response, jsonify, request
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -12,8 +11,21 @@ import datetime
 import face_recognition # Import face_recognition
 import pickle # Import pickle for caching
 import random # Import random for selecting subset of images
+import geocoder # Import geocoder for location services
+import json
+import time
+import shutil
 
 app = Flask(__name__)
+
+# Configuration
+KNOWN_FACES_DIR = "known_faces"
+METADATA_FILE = os.path.join(KNOWN_FACES_DIR, "metadata.json")
+CACHE_FILE = os.path.join(KNOWN_FACES_DIR, "face_encodings_cache.pkl")
+OUTPUT_FRAMES_DIR = "/Users/kabirmathur/Documents/a_s/Kabir_Mathur"
+IDENTIFIED_PERSONS_DIR = "/Users/kabirmathur/Documents/a_s/identified_persons"
+os.makedirs(IDENTIFIED_PERSONS_DIR, exist_ok=True)
+os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
 
 # Determine device
 if torch.cuda.is_available():
@@ -26,49 +38,116 @@ print(f"Using device: {device}")
 
 # Global variable to control monitoring state
 monitoring_active = False
+latest_identification = {
+    "name": None,
+    "time": None,
+    "location": None,
+    "face_encoding": None,
+    "face_location": None,
+    "is_unknown": False
+}
 ANTI_SPOOF_THRESHOLD = 0.95 # Adjusted threshold for anti-spoofing (increased for stricter classification)
-
-# Directory to store frames
-OUTPUT_FRAMES_DIR = "/Users/kabirmathur/Documents/a_s/Kabir_Mathur"
-CACHE_FILE = os.path.join(OUTPUT_FRAMES_DIR, "face_encodings_cache.pkl") # Define cache file path
-os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
 
 # Face Recognition variables
 known_face_encodings = []
 known_face_names = []
 
-def load_known_faces(known_faces_dir):
+def save_face_encoding(name, encoding, image):
+    """Save a new face encoding and its image to the known faces directory."""
+    # Create output directory if it doesn't exist
+    os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+    
+    # Load or create metadata
+    if os.path.exists(METADATA_FILE):
+        with open(METADATA_FILE, 'r') as f:
+            metadata = json.load(f)
+    else:
+        metadata = {"known_faces": []}
+    
+    # Create person's directory if it doesn't exist
+    person_dir = os.path.join(KNOWN_FACES_DIR, name)
+    os.makedirs(person_dir, exist_ok=True)
+    
+    # Generate a unique filename
+    timestamp = int(time.time())
+    filename = f"{timestamp}.jpg"
+    filepath = os.path.join(person_dir, filename)
+    
+    # Save the face image
+    cv2.imwrite(filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    
+    # Load or create encodings for this person
+    encodings_file = os.path.join(person_dir, 'encodings.pkl')
+    if os.path.exists(encodings_file):
+        with open(encodings_file, 'rb') as f:
+            person_encodings = pickle.load(f)
+    else:
+        person_encodings = []
+        metadata['known_faces'].append(name)
+    
+    # Add new encoding
+    person_encodings.append(encoding)
+    
+    # Save updated encodings
+    with open(encodings_file, 'wb') as f:
+        pickle.dump(person_encodings, f)
+    
+    # Save updated metadata
+    with open(METADATA_FILE, 'w') as f:
+        json.dump(metadata, f)
+    
+    # Reload known faces
     global known_face_encodings, known_face_names
+    known_face_encodings, known_face_names = load_known_faces()
+    
+    print(f"Saved new face: {name} ({filename})")
+    return True
 
-    if os.path.exists(CACHE_FILE):
-        print("Loading known faces from cache...")
-        with open(CACHE_FILE, "rb") as f:
-            known_face_encodings, known_face_names = pickle.load(f)
-        print(f"Loaded {len(known_face_encodings)} known faces from cache.")
-        return
-
-    print("No cache found. Loading a random subset of known faces from directory...")
-    all_image_files = [f for f in os.listdir(known_faces_dir) if f.endswith((".jpg", ".png", ".jpeg"))]
-    # Select a random subset of up to 50 images, or fewer if less than 50 are available
-    selected_image_files = random.sample(all_image_files, min(len(all_image_files), 50))
-
-    for filename in selected_image_files:
-        image_path = os.path.join(known_faces_dir, filename)
-        image = face_recognition.load_image_file(image_path)
-        face_encodings = face_recognition.face_encodings(image)
-        if face_encodings:
-            known_face_encodings.append(face_encodings[0])
-            known_face_names.append(os.path.basename(known_faces_dir)) # Storing folder name as person's name
-    print(f"Loaded {len(known_face_encodings)} known faces from directory.")
-
+def load_known_faces():
+    known_face_encodings = []
+    known_face_names = []
+    
+    # Create the known_faces directory if it doesn't exist
+    os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+    
+    # If metadata file doesn't exist, create it
+    if not os.path.exists(METADATA_FILE):
+        with open(METADATA_FILE, 'w') as f:
+            json.dump({"known_faces": []}, f)
+        return known_face_encodings, known_face_names
+    
+    # Load metadata
+    with open(METADATA_FILE, 'r') as f:
+        metadata = json.load(f)
+    
+    # Process each known person
+    for person_name in metadata['known_faces']:
+        person_dir = os.path.join(KNOWN_FACES_DIR, person_name)
+        if not os.path.exists(person_dir):
+            continue
+            
+        # Load encodings if they exist
+        encodings_file = os.path.join(person_dir, 'encodings.pkl')
+        if os.path.exists(encodings_file):
+            try:
+                with open(encodings_file, 'rb') as f:
+                    person_encodings = pickle.load(f)
+                    known_face_encodings.extend(person_encodings)
+                    known_face_names.extend([person_name] * len(person_encodings))
+            except Exception as e:
+                print(f"Error loading encodings for {person_name}: {e}")
+    
     # Save to cache
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump((known_face_encodings, known_face_names), f)
-    print(f"Saved {len(known_face_encodings)} known faces to cache.")
+    if known_face_encodings:
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump((known_face_encodings, known_face_names), f)
+    
+    print(f"Loaded {len(known_face_encodings)} known faces from {len(set(known_face_names))} different people.")
+    return known_face_encodings, known_face_names
 
-# Load known faces from the Kabir_Mathur directory on startup
+# Load known faces on startup
 with app.app_context(): # Run this within the Flask app context
-    load_known_faces(OUTPUT_FRAMES_DIR) # Using OUTPUT_FRAMES_DIR as the known faces directory
+    load_known_faces()  # Load known faces from the known_faces directory
 
 # Load the anti-spoofing model
 model_path = '/Users/kabirmathur/Documents/a_s/antispoof_vit_traced.pt'
@@ -84,10 +163,35 @@ preprocess = transforms.Compose([
     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]), # Reverted to 0.5 mean/std
 ])
 
-# Initialize YOLO face detector
-yolo_model = YOLO('yolov8n.pt') # Reverted to generic YOLOv8n model for stability
+# Initialize YOLO face detector with explicit configuration
+try:
+    # Try loading with the latest API first
+    yolo_model = YOLO('yolov8n.pt')
+    # Test the model with a dummy input to ensure it's properly loaded
+    yolo_model.predict(torch.zeros((1, 3, 640, 640), device=device), verbose=False)
+    print("YOLO model loaded successfully with default settings")
+except Exception as e:
+    print(f"Error loading YOLO model: {e}")
+    print("Trying alternative loading method...")
+    try:
+        # Fallback to explicit model loading with CPU first
+        yolo_model = YOLO('yolov8n.pt', task='detect')
+        yolo_model = yolo_model.cpu()
+        # Test with a small image
+        yolo_model.predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
+        print("YOLO model loaded successfully with CPU-first method")
+    except Exception as e2:
+        print(f"Failed to load YOLO model: {e2}")
+        raise RuntimeError("Could not initialize YOLO model. Please check your installation and try again.")
+
+# Move model to the appropriate device
 yolo_model.to(device)
-yolo_model = yolo_model.to(torch.float32) # Ensure YOLO model is also float32
+if device.type == 'cuda':
+    yolo_model = yolo_model.half()  # Use half precision for CUDA
+    print("Using half precision (FP16) for YOLO model on CUDA")
+else:
+    yolo_model = yolo_model.float()  # Use full precision for CPU/MPS
+    print("Using full precision (FP32) for YOLO model")
 
 # Get class names from the YOLO model
 class_names = yolo_model.names
@@ -122,14 +226,144 @@ def stop_monitoring():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/latest_identification')
+def latest_identification_data():
+    # Create a new dictionary with only the data we want to send
+    response_data = {
+        'name': latest_identification.get('name'),
+        'time': latest_identification.get('time'),
+        'location': latest_identification.get('location'),
+        'is_unknown': latest_identification.get('is_unknown', False)
+    }
+    return jsonify(response_data)
+
+def clear_known_faces():
+    """Clear all known face data and reload from disk."""
+    global known_face_encodings, known_face_names
+    known_face_encodings = []
+    known_face_names = []
+    # Reload known faces from disk
+    load_known_faces()
+
+@app.route('/clear_faces', methods=['POST'])
+def clear_faces():
+    """Clear all known faces and reset the system."""
+    try:
+        # Remove the entire known_faces directory
+        if os.path.exists(KNOWN_FACES_DIR):
+            shutil.rmtree(KNOWN_FACES_DIR)
+        
+        # Recreate the directory structure
+        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+        
+        # Reset global variables
+        global known_face_encodings, known_face_names
+        known_face_encodings = []
+        known_face_names = []
+        
+        # Create fresh metadata file
+        with open(METADATA_FILE, 'w') as f:
+            json.dump({"known_faces": []}, f)
+        
+        return jsonify({
+            "status": "success", 
+            "message": "Successfully cleared all known faces. The system has been reset."
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to clear known faces: {str(e)}"
+        }), 500
+
+@app.route('/register_face', methods=['POST'])
+def register_face():
+    global latest_identification, known_face_encodings, known_face_names
+    
+    data = request.get_json()
+    name = data.get('name')
+    
+    if not name or not latest_identification.get('is_unknown') or not latest_identification.get('face_encoding'):
+        return jsonify({
+            "status": "error", 
+            "message": "Invalid request or no face to register. Make sure a face is detected and marked as unknown."
+        }), 400
+    
+    # Get the face encoding and image
+    face_encoding = np.array(latest_identification['face_encoding'])
+    face_location = latest_identification['face_location']
+    
+    # Save the new face encoding
+    face_encoding = latest_identification['face_encoding']
+    face_image = latest_identification.get('last_frame')
+    
+    if face_image is None:
+        return jsonify({"status": "error", "message": "No face image available"}), 400
+        
+    # Convert face_encoding from list back to numpy array if needed
+    if isinstance(face_encoding, list):
+        face_encoding = np.array(face_encoding)
+    
+    # Extract face from frame using face_location
+    top, right, bottom, left = face_location
+    face_image = face_image[top:bottom, left:right]
+    
+    # Clear and reload known faces to ensure consistency
+    clear_known_faces()
+    
+    # Save the new face encoding and image to disk
+    save_face_encoding(name, face_encoding, face_image)
+    
+    # Reload known faces to include the newly added one
+    global known_face_encodings, known_face_names
+    known_face_encodings, known_face_names = load_known_faces()
+    
+    # Update the latest identification with the new face data
+    latest_identification.update({
+        'name': name,
+        'is_unknown': False,
+        'face_encoding': face_encoding.tolist(),
+        'face_location': face_location,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    })
+    
+    print(f"Successfully registered new face: {name}")
+    print(f"Total known faces after registration: {len(known_face_encodings)}")
+    
+    return jsonify({"status": "success", "message": f"Face registered as {name}"})
+
+def open_camera_jetson():
+    # GStreamer pipeline for Jetson Nano CSI camera
+    pipeline = (
+        "nvarguscamerasrc ! "
+        "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
+        "nvvidconv flip-method=0 ! "
+        "video/x-raw, width=(int)640, height=(int)480, format=(string)BGRx ! "
+        "videoconvert ! "
+        "video/x-raw, format=(string)BGR ! appsink"
+    )
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    if cap.isOpened():
+        print("Successfully opened camera using GStreamer pipeline.")
+        return cap
+    else:
+        print("Failed to open camera with GStreamer, falling back to standard method.")
+        # Fallback to standard USB camera detection
+        for camera_index in [0, 1, 2]:
+            cap = cv2.VideoCapture(camera_index)
+            if cap.isOpened():
+                print(f"Successfully opened camera at index {camera_index}")
+                return cap
+    return None
+
 def generate_frames():
     global monitoring_active
-    frame_count = 0 # Initialize frame counter
-    PROCESS_EVERY_N_FRAMES = 1 # Process anti-spoofing and recognition every 1st frame
+    frame_count = 0  # Initialize frame counter
+    PROCESS_EVERY_N_FRAMES = 1  # Process anti-spoofing and recognition every 1st frame
 
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not open video stream. Please check webcam permissions or if another application is using it.")
+    cap = open_camera_jetson()
+
+    if not cap or not cap.isOpened():
+        print("Error: Could not open any video stream. Please check webcam permissions or if another application is using it.")
         # Generate a blank frame with an error message
         font = cv2.FONT_HERSHEY_SIMPLEX
         img = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -141,23 +375,53 @@ def generate_frames():
         ret, buffer = cv2.imencode('.jpg', img)
         frame = buffer.tobytes()
         while True:
-            yield (b'--frame\n'
+            yield (b'--frame\n' 
                    b'Content-Type: image/jpeg\n\n' + frame + b'\n')
+
+    # Set camera resolution (adjust these values based on your camera's capabilities)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    # Warm-up the camera (some cameras need a few frames to adjust)
+    for _ in range(5):
+        cap.read()
 
     while True:
         if not monitoring_active:
-            # If monitoring is not active, yield a blank frame or a static image
-            # For now, we'll yield a blank gray frame
-            blank_frame = np.full((480, 640, 3), 128, dtype=np.uint8) # Gray frame
+            # Create a more informative waiting frame
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            text = "Monitoring Paused - Click 'Start Monitoring' to begin"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            text_size = cv2.getTextSize(text, font, 0.7, 2)[0]
+            text_x = (blank_frame.shape[1] - text_size[0]) // 2
+            text_y = (blank_frame.shape[0] + text_size[1]) // 2
+            cv2.putText(blank_frame, text, (text_x, text_y), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
             ret, buffer = cv2.imencode('.jpg', blank_frame)
             frame = buffer.tobytes()
-            yield (b'--frame\n'
+            yield (b'--frame\n' 
                    b'Content-Type: image/jpeg\n\n' + frame + b'\n')
-            continue # Skip processing if not active
+            continue  # Skip processing if not active
 
         success, frame = cap.read()
         if not success:
-            break
+            print("Failed to grab frame from camera")
+            # Create an error frame
+            error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(error_frame, "Failed to grab frame from camera", (50, 240), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            ret, buffer = cv2.imencode('.jpg', error_frame)
+            frame = buffer.tobytes()
+            yield (b'--frame\n' 
+                   b'Content-Type: image/jpeg\n\n' + frame + b'\n')
+            continue
+
+        # Convert frame to RGB for face recognition
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        face_identified_this_frame = False
+        
+        # Store the current frame for potential registration
+        latest_identification['last_frame'] = rgb_frame.copy()
 
         results = yolo_model(frame)
 
@@ -204,16 +468,58 @@ def generate_frames():
                             face_encoding = face_recognition.face_encodings(face_image_for_recognition_rgb, face_locations)[0]
 
                             # Compare with known faces
-                            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
-                            identified_name = "Unknown" # Initialize identified_name
-
-                            if True in matches:
-                                first_match_index = matches.index(True)
-                                identified_name = known_face_names[first_match_index]
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            best_match_index = np.argmin(face_distances) if len(face_distances) > 0 else -1
+                            
+                            # Use a threshold to determine if it's a match
+                            if best_match_index != -1 and face_distances[best_match_index] < 0.6:  # Lower is better match
+                                identified_name = known_face_names[best_match_index]
+                                is_unknown = False
+                            else:
+                                identified_name = "Unknown"
+                                is_unknown = True
+                            
+                            # Store the face encoding and location for potential registration
+                            latest_identification["face_encoding"] = face_encoding.tolist()
+                            latest_identification["face_location"] = face_locations[0]  # Store the face location
+                            latest_identification["is_unknown"] = is_unknown
                             
                             # Print the identified name
-                            print(f"Identified Face: {identified_name}")
-                            cv2.putText(frame, identified_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                            print(f"Identified Face: {identified_name} (Distance: {face_distances[best_match_index] if best_match_index != -1 else 'N/A'})")
+                            
+                            # Draw bounding box and text with different colors for known/unknown
+                            if is_unknown:
+                                # Yellow for unknown faces
+                                box_color = (0, 255, 255)  # Yellow in BGR
+                                text_color = (0, 0, 0)     # Black text for better visibility on yellow
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                                cv2.putText(frame, "Unknown - Click to Register", (x1, y1 - 10), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+                            else:
+                                # Green for known faces
+                                box_color = (0, 255, 0)    # Green in BGR
+                                text_color = (255, 255, 255)  # White text
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                                cv2.putText(frame, identified_name, (x1, y1 - 10), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+
+                            # Get current time and location
+                            now = datetime.datetime.now()
+                            current_time = now.strftime("%Y-%m-%d %H:%M:%S")
+                            g = geocoder.ip('me')
+                            location = g.city if g.city else "Unknown Location"
+
+                            # Update latest identification
+                            latest_identification["name"] = identified_name
+                            latest_identification["time"] = current_time
+                            latest_identification["location"] = location
+
+                            if not is_unknown:  # Only save frames for known faces
+                                # Save the frame with the identified person
+                                filename = f"{identified_name},{current_time},{location}.jpg".replace(" ", "_").replace(":", "-")
+                                filepath = os.path.join(IDENTIFIED_PERSONS_DIR, filename)
+                                cv2.imwrite(filepath, frame)
+                                face_identified_this_frame = True
 
                         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 else:
@@ -223,6 +529,11 @@ def generate_frames():
 
         # Increment frame count
         frame_count += 1
+
+        if not face_identified_this_frame:
+            latest_identification["name"] = None
+            latest_identification["time"] = None
+            latest_identification["location"] = None
 
         # # Save the processed frame (Disabled for performance)
         # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -237,4 +548,4 @@ def generate_frames():
     cap.release()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5001)

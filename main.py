@@ -1,475 +1,472 @@
-import torch
-from ultralytics import YOLO
-import easyocr
-from transformers import BlipProcessor, BlipForConditionalGeneration
-from PIL import Image
-import cv2
+# main.py - Updated with OCR and Room Description
+
 import os
-from flask import Flask, request, render_template, url_for, Response, jsonify, redirect
+import cv2
+import torch
+import numpy as np
+from PIL import Image
+from flask import Flask, render_template, Response, request, jsonify, redirect, url_for
 from werkzeug.utils import secure_filename
 import time
 import threading
-import numpy as np
 import platform
+import json
+import re
+from pathlib import Path
+import easyocr
+from transformers import BlipProcessor, BlipForConditionalGeneration, TrOCRProcessor, VisionEncoderDecoderModel
 
-# Optional Jetson-specific imports
-try:
-    import jetson_stats
-    JETSON_STATS_AVAILABLE = True
-except ImportError:
-    JETSON_STATS_AVAILABLE = False
+# Initialize Flask app with static folder
+app = Flask(__name__, static_folder='static', static_url_path='')
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-try:
-    import pynvml
-    pynvml.nvmlInit()
-    PYNVML_AVAILABLE = True
-except ImportError:
-    PYNVML_AVAILABLE = False
+# Configuration
+YOLO_MODEL = 'yolov8s.pt'
+BLIP_MODEL = "Salesforce/blip-image-captioning-base"
+TEXT_DETECTION_CONFIDENCE = 0.5
 
-# --- Configuration ---
-UPLOAD_FOLDER = 'static/uploads/'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
-BLIP_MODEL_NAME = "Salesforce/blip-image-captioning-base"
+# Initialize models and device
+yolo_model = None
+blip_processor = None
+blip_model = None
+easyocr_reader = None
+trocr_processor = None
+trocr_model = None
+device = None
+is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
 
-# --- Flask App Initialization ---
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Ensure the upload folder exists
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# --- 1. Initialize Models ---
 def get_optimal_device():
-    """Determines the optimal device for inference on Jetson Nano."""
-    print("Detecting optimal device...")
-    
-    # Check if we're on Jetson Nano
-    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
-    
-    if is_jetson:
-        print("Jetson Nano detected!")
-        if torch.cuda.is_available():
-            # Check CUDA memory availability on Jetson
-            try:
-                torch.cuda.empty_cache()
-                # Test CUDA allocation
-                test_tensor = torch.zeros(1).cuda()
-                del test_tensor
-                torch.cuda.empty_cache()
-                device = "cuda"
-                print(f"Using CUDA on Jetson Nano. GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-            except RuntimeError as e:
-                print(f"CUDA allocation failed: {e}. Falling back to CPU.")
-                device = "cpu"
-        else:
-            device = "cpu"
-    else:
-        # Non-Jetson system
-        if torch.backends.mps.is_available():
-            device = "mps"
-        elif torch.cuda.is_available():
-            device = "cuda"
-        else:
-            device = "cpu"
-    
-    print(f"Selected device: {device}")
-    return device
+    """Determine the best available device for inference."""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 def initialize_models():
-    """Loads all the required models and returns them."""
-    print("Initializing models...")
+    """Initialize all required models with error handling."""
+    global yolo_model, blip_processor, blip_model, easyocr_reader, trocr_processor, trocr_model, device
     
-    # Use smaller YOLO model for Jetson Nano to save memory
-    device = get_optimal_device()
-    if device == "cpu" or platform.machine() == 'aarch64':
-        print("Using YOLOv8s (smaller model) for better performance on Jetson Nano")
-        yolo_model = YOLO('yolov8s.pt')
-    else:
-        yolo_model = YOLO('yolov8x.pt')
-    
-    # Initialize BLIP model with memory optimization
-    blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL_NAME)
-    
-    # Load BLIP model with memory optimization for Jetson
-    if device == "cuda" and platform.machine() == 'aarch64':
-        # Jetson Nano CUDA optimization
-        blip_model = BlipForConditionalGeneration.from_pretrained(
-            BLIP_MODEL_NAME,
-            torch_dtype=torch.float16,  # Use half precision to save memory
-            low_cpu_mem_usage=True
-        ).to(device)
-        # Enable memory efficient attention if available
-        if hasattr(blip_model, 'gradient_checkpointing_enable'):
-            blip_model.gradient_checkpointing_enable()
-    else:
-        blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL_NAME).to(device)
+    try:
+        print("Initializing models...")
+        device = get_optimal_device()
+        print(f"Using device: {device}")
+        
+        # Initialize YOLO
+        print("Loading YOLO model...")
+        yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+        yolo_model.to(device).eval()
+        
+        # Initialize BLIP for image captioning
+        print("Loading BLIP model...")
+        blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
+        blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL).to(device)
+        
+        # Initialize EasyOCR for text detection
+        print("Initializing EasyOCR...")
+        easyocr_reader = easyocr.Reader(['en'])
 
-    print("Models initialized successfully.")
-    return yolo_model, blip_processor, blip_model, device
+        # Initialize TrOCR for handwritten text
+        print("Loading TrOCR model...")
+        trocr_processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
+        trocr_model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten').to(device)
+        
+        print("All models initialized successfully!")
+        
+    except Exception as e:
+        print(f"Error initializing models: {e}")
+        raise
 
-yolo_model, blip_processor, blip_model, device = initialize_models()
+# Initialize models
+initialize_models()
 
-# --- Global variables for real-time analysis ---
-video_camera = None # Initialize as None
-last_analysis = {"objects": [], "description": "Initializing..."}
+# Global variables for real-time analysis
+last_analysis = {
+    "objects": [],
+    "caption": "Initializing...",
+    "text_blocks": [],
+    "room_description": "No description available yet"
+}
 analysis_lock = threading.Lock()
-
-# Optimize frame analysis interval for Jetson Nano
-is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
-if is_jetson:
-    FRAME_INTERVAL_FOR_ANALYSIS = 30  # Analyze less frequently on Jetson to save resources
-    print("Jetson Nano detected - using optimized frame analysis interval")
-else:
-    FRAME_INTERVAL_FOR_ANALYSIS = 20
-
 frame_counter = 0
+video_capture = None
+frame_generator_thread = None
+stop_event = threading.Event()
 
-# Jetson-specific performance settings
-if is_jetson:
-    # Set optimal thread count for Jetson Nano
-    torch.set_num_threads(4)
-    # Enable memory efficient mode
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
+# --- Background Thread for Frame Generation ---
+def frame_generator_task():
+    """A background task that reads frames from the camera and analyzes them."""
+    global video_capture, frame_counter
+    
+    while not stop_event.is_set():
+        if video_capture is None or not video_capture.isOpened():
+            time.sleep(0.1)
+            continue
+            
+        ret, frame = video_capture.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
+            
+        frame_counter += 1
+        analyze_frame(frame.copy())
 
-# --- 2. Image Processing Functions ---
+# --- Helper Functions ---
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
+
+def get_room_description(image):
+    """Generate a room description using BLIP model."""
+    try:
+        inputs = blip_processor(images=image, return_tensors="pt").to(device)
+        with torch.no_grad():
+            caption_ids = blip_model.generate(**inputs, max_length=50)
+        return blip_processor.decode(caption_ids[0], skip_special_tokens=True)
+    except Exception as e:
+        print(f"Error generating room description: {e}")
+        return "Could not generate room description"
+
+def extract_text_with_trocr(image):
+    """Recognize handwritten text using TrOCR."""
+    try:
+        # Convert image to RGB
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+
+        # Process image and generate text
+        pixel_values = trocr_processor(images=pil_image, return_tensors="pt").pixel_values.to(device)
+        with torch.no_grad():
+            generated_ids = trocr_model.generate(pixel_values)
+        
+        generated_text = trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        return generated_text
+    except Exception as e:
+        print(f"Error in TrOCR text extraction: {e}")
+        return ""
+
+def detect_text(image):
+    """Detect text in the image using EasyOCR."""
+    try:
+        # Convert to RGB for better text detection
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = easyocr_reader.readtext(rgb_image)
+        
+        text_blocks = []
+        for (bbox, text, prob) in results:
+            if prob > TEXT_DETECTION_CONFIDENCE:
+                text_blocks.append({
+                    'text': text,
+                    'confidence': float(prob),
+                    'bbox': [int(x) for point in bbox for x in point]  # Flatten bbox points
+                })
+        return text_blocks
+    except Exception as e:
+        print(f"Error in text detection: {e}")
+        return []
 
 def analyze_frame(frame):
-    """Runs the full analysis pipeline on a single video frame."""
+    """Analyze a single frame for objects, text, and generate room description."""
     global last_analysis
-    print("Analyzing a new frame...")
-
+    
     try:
-        # Clear CUDA cache before processing (important for Jetson)
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-        # --- Detailed Object Detection ---
-        results = yolo_model(frame, verbose=False)
-        detected_objects = []
-        for result in results:
-            for box in result.boxes:
-                confidence = float(box.conf)
-                if confidence > 0.4:
-                    class_id = int(box.cls)
-                    class_name = yolo_model.names[class_id]
-                    detected_objects.append(f"{class_name} (Confidence: {confidence:.2f})")
-
-        # --- Image Captioning with BLIP (with memory optimization) ---
+        # Convert frame to RGB (BLIP expects RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
         
-        # Resize image for Jetson Nano to save memory
-        if is_jetson:
-            pil_image = pil_image.resize((320, 240), Image.Resampling.LANCZOS)
+        # 1. Object detection with YOLO
+        results = yolo_model(frame)
+        detections = results.pandas().xyxy[0]
         
-        inputs = blip_processor(pil_image, return_tensors="pt").to(blip_model.device)
+        # Process detections
+        objects = []
+        for _, det in detections.iterrows():
+            if det['confidence'] > 0.5:  # Confidence threshold
+                objects.append({
+                    'class': det['name'],
+                    'confidence': float(det['confidence']),
+                    'bbox': [int(x) for x in det[['xmin', 'ymin', 'xmax', 'ymax']].values]
+                })
         
-        # Use optimized generation for Jetson
-        with torch.no_grad():  # Disable gradients to save memory
-            if is_jetson and device == "cuda":
-                # Use half precision on Jetson for memory efficiency
-                inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}
-                blip_model.half()
-            
-            out = blip_model.generate(**inputs, max_length=50, num_beams=3)  # Limit generation for speed
-            caption = blip_processor.decode(out[0], skip_special_tokens=True)
+        # 2. Text Detection (EasyOCR)
+        text_blocks = detect_text(frame)
 
-        # --- Format the analysis into a detailed description ---
-        description = format_analysis_as_description(caption, detected_objects)
-
+        # 3. Handwritten Text Recognition (TrOCR)
+        handwritten_text = extract_text_with_trocr(frame)
+        
+        # 4. Generate Room Description
+        room_description = get_room_description(pil_image)
+        
+        # 5. Update last_analysis with all results
         with analysis_lock:
-            last_analysis["description"] = description
-            last_analysis["objects"] = detected_objects # Also update the objects list
-        print(f"Detailed analysis updated.")
-
-        # Clear CUDA cache after processing
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    except Exception as e:
-        print(f"Error during frame analysis: {e}")
-        # Clear cache on error
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-def format_analysis_as_description(caption, objects):
-    """Formats the analysis into a descriptive list of observations."""
-    description_lines = [
-        f"- General scene: {caption.capitalize()}."
-    ]
-
-    # Extract just the object name, removing confidence score for cleaner sentences
-    plain_objects = [obj.split(' (')[0] for obj in objects]
-    unique_objects = sorted(list(set(plain_objects)))
-
-    if unique_objects:
-        description_lines.append("") # Add a newline for spacing
-        for obj in unique_objects:
-            article = "An" if obj[0].lower() in "aeiou" else "A"
-            description_lines.append(f"- {article} {obj} is visible.")
+            last_analysis = {
+                "objects": objects,
+                "text_blocks": text_blocks,
+                "handwritten_text": handwritten_text,
+                "room_description": room_description,
+                "caption": room_description,  # For backward compatibility
+                "timestamp": time.time()
+            }
             
-    return "\n".join(description_lines)
+        return last_analysis
+        
+    except Exception as e:
+        print(f"Error in frame analysis: {e}")
+        return {"error": str(e)}
 
-def analyze_image(image_path):
-    """Runs the full analysis pipeline on a single image."""
-    print(f"Analyzing image: {image_path}")
-    
-    # Object Detection
-    results = yolo_model(image_path)
-    img = cv2.imread(image_path)
-    detected_objects = []
-    for result in results:
-        for box in result.boxes:
-            confidence = float(box.conf)
-            if confidence > 0.25:
-                class_id = int(box.cls)
-                class_name = yolo_model.names[class_id]
-                if class_name == 'Wardrobe':
-                    class_name = 'Cupboard'
-                detected_objects.append(class_name)
-            # Draw bounding boxes on the image
-            x1, y1, x2, y2 = [int(i) for i in box.xyxy[0]]
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
-    # Save the annotated image
-    annotated_image_path = os.path.join(app.config['UPLOAD_FOLDER'], 'annotated_' + os.path.basename(image_path))
-    cv2.imwrite(annotated_image_path, img)
-
-    # Image Captioning with BLIP
-    pil_image = Image.open(image_path).convert("RGB")
-    inputs = blip_processor(pil_image, return_tensors="pt").to(blip_model.device)
-    out = blip_model.generate(**inputs)
-    caption = blip_processor.decode(out[0], skip_special_tokens=True)
-
-    # Combine results
-    analysis = {
-        "objects": list(set(detected_objects)),
-        "description": caption
-    }
-    
-    print(f"Analysis complete: {analysis}")
-    return analysis, annotated_image_path
-
-# --- 3. Flask Routes ---
+# --- Flask Routes ---
 @app.route('/')
-def welcome():
-    """Render the welcome page."""
-    return render_template('welcome.html')
+def index():
+    return render_template('index.html')
 
 @app.route('/real_time')
 def real_time():
-    """Render the real-time analysis page."""
     return render_template('real_time.html')
 
 @app.route('/upload_page')
 def upload_page():
-    """Render the video upload page."""
     return render_template('upload.html')
 
-def generate_frames():
-    global frame_counter, video_camera
+def generate_frames_for_feed():
+    """Generates frames for the video feed by drawing on the latest captured frame."""
     while True:
-        if video_camera is None or not video_camera.isOpened():
-            # If camera is off, send a blank frame
-            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            ret, buffer = cv2.imencode('.jpg', blank_frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(1) # Avoid busy-waiting
-            continue
-
-        success, frame = video_camera.read()
-        if not success:
-            break
+        if video_capture is None or not video_capture.isOpened():
+            blank = np.zeros((480, 640, 3), dtype=np.uint8)
+            _, buffer = cv2.imencode('.jpg', blank)
+            frame_bytes = buffer.tobytes()
         else:
-            # Periodically run the heavy analysis in a separate thread
-            frame_counter += 1
-            if frame_counter % FRAME_INTERVAL_FOR_ANALYSIS == 0:
-                threading.Thread(target=analyze_frame, args=(frame.copy(),)).start()
+            ret, frame = video_capture.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
 
-            # Run lightweight object detection on every frame
-            results = yolo_model(frame, verbose=False)
-            detected_objects_in_frame = []
-            for result in results:
-                for box in result.boxes:
-                    confidence = float(box.conf)
-                    if confidence > 0.4:
-                        class_id = int(box.cls)
-                        class_name = yolo_model.names[class_id]
-                        detected_objects_in_frame.append(class_name)
-                        # Draw bounding boxes
-                        x1, y1, x2, y2 = [int(i) for i in box.xyxy[0]]
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
             with analysis_lock:
-                last_analysis["objects"] = list(set(detected_objects_in_frame))
+                analysis = last_analysis.copy()
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            for obj in analysis.get('objects', []):
+                x1, y1, x2, y2 = obj['bbox']
+                label = f"{obj['class']} {obj['confidence']:.2f}"
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+            for text_block in analysis.get('text_blocks', []):
+                points = np.array(text_block['bbox']).reshape(-1, 2).astype(np.int32)
+                cv2.polylines(frame, [points], isClosed=True, color=(0, 255, 255), thickness=2)
+
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 @app.route('/video_feed')
 def video_feed():
-    """Video streaming route."""
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-def get_camera_config():
-    """Get optimal camera configuration for Jetson Nano."""
-    is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
-    
-    if is_jetson:
-        # Jetson Nano camera configuration
-        # Try CSI camera first (common on Jetson), then USB
-        camera_configs = [
-            {'index': 0, 'width': 640, 'height': 480, 'fps': 30},  # CSI camera
-            {'index': 1, 'width': 640, 'height': 480, 'fps': 30},  # USB camera
-        ]
-    else:
-        # Standard configuration for other systems
-        camera_configs = [
-            {'index': 0, 'width': 640, 'height': 480, 'fps': 30}
-        ]
-    
-    return camera_configs
+    return Response(generate_frames_for_feed(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/start_camera')
 def start_camera():
-    global video_camera
-    if video_camera is None or not video_camera.isOpened():
-        camera_configs = get_camera_config()
-        
-        for config in camera_configs:
-            try:
-                video_camera = cv2.VideoCapture(config['index'])
-                if video_camera.isOpened():
-                    # Set camera properties for Jetson Nano optimization
-                    video_camera.set(cv2.CAP_PROP_FRAME_WIDTH, config['width'])
-                    video_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config['height'])
-                    video_camera.set(cv2.CAP_PROP_FPS, config['fps'])
-                    
-                    # Jetson-specific optimizations
-                    if platform.machine() == 'aarch64':
-                        video_camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
-                        video_camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-                    
-                    print(f"Camera started with config: {config}")
-                    return jsonify(status="Camera started", config=config)
-                else:
-                    video_camera.release()
-                    video_camera = None
-            except Exception as e:
-                print(f"Failed to start camera {config['index']}: {e}")
-                continue
-        
-        return jsonify(status="Failed to start camera", error="No working camera found")
+    global video_capture, frame_counter, last_analysis, frame_generator_thread, stop_event
     
-    return jsonify(status="Camera already running")
+    try:
+        # Release existing capture if exists
+        if video_capture is not None:
+            video_capture.release()
+            
+        # Try to initialize camera
+        video_capture = cv2.VideoCapture(0)
+        
+        # Check if camera opened successfully
+        if not video_capture.isOpened():
+            return jsonify({
+                "status": "error",
+                "message": "Failed to open camera. Please ensure it's connected and not in use by another application."
+            }), 500
+            
+        # Set camera properties
+        video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        
+        # Reset analysis data
+        with analysis_lock:
+            last_analysis = {
+                "objects": [],
+                "caption": "Initializing...",
+                "room_description": "Initializing...",
+                "text_blocks": [],
+                "timestamp": time.time()
+            }
+        
+        # Start frame generation in a separate thread if not already running
+        if frame_generator_thread is None or not frame_generator_thread.is_alive():
+            stop_event.clear()
+            frame_generator_thread = threading.Thread(target=frame_generator_task, name='frame_generator')
+            frame_generator_thread.daemon = True
+            frame_generator_thread.start()
+        
+        return jsonify({
+            "status": "success",
+            "message": "Camera initialized successfully",
+            "resolution": {
+                "width": int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                "height": int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            }
+        })
+        
+    except Exception as e:
+        error_msg = f"Camera initialization error: {str(e)}"
+        print(error_msg)
+        if video_capture is not None:
+            video_capture.release()
+            video_capture = None
+        return jsonify({
+            "status": "error",
+            "message": error_msg,
+            "error_type": str(type(e).__name__)
+        }), 500
 
 @app.route('/stop_camera')
 def stop_camera():
-    global video_camera
-    if video_camera is not None:
-        video_camera.release()
-        video_camera = None
-    return jsonify(status="Camera stopped")
+    global video_capture
+    global frame_generator_thread
+    if video_capture is not None:
+        video_capture.release()
+        video_capture = None
+    
+    stop_event.set()
+    if frame_generator_thread is not None:
+        frame_generator_thread.join(timeout=2)
+        frame_generator_thread = None
+    return jsonify({"status": "success", "message": "Camera stopped"})
 
 @app.route('/analysis_data')
 def analysis_data():
-    """Endpoint to get the latest analysis data."""
-    with analysis_lock:
-        return jsonify(last_analysis)
+    try:
+        if video_capture is None or not video_capture.isOpened():
+            return jsonify({
+                "error": "Camera not initialized",
+                "status": "error",
+                "message": "Camera is not ready. Please ensure the camera is connected and accessible.",
+                "objects": [],
+                "caption": "Camera not available",
+                "room_description": "Camera not available",
+                "text_blocks": [],
+                "horizontal_text": [],
+                "timestamp": time.time()
+            }), 503  # Service Unavailable
 
-@app.route('/upload_video', methods=['POST'])
-def upload_video():
-    if 'video' not in request.files:
-        return redirect(request.url)
-    file = request.files['video']
-    if file.filename == '':
-        return redirect(request.url)
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(video_path)
+        with analysis_lock:
+            # Create a deep copy to prevent race conditions during iteration
+            current_analysis = last_analysis.copy()
 
-        # Start analysis
-        processed_video_path, analysis_results = analyze_video(video_path)
+            # Format the response with all analysis data
+            response = {
+                "status": "success",
+                "objects": [obj.get('class', 'unknown') for obj in current_analysis.get('objects', [])],
+                "caption": current_analysis.get('room_description', 'Analyzing...'),
+                "room_description": current_analysis.get('room_description', 'Analyzing...'),
+                "caption_confidence": current_analysis.get('caption_confidence', 0.0),
+                "text_blocks": current_analysis.get('text_blocks', []),
+                "handwritten_text": current_analysis.get('handwritten_text', ''),
+                "timestamp": current_analysis.get('timestamp', time.time())
+            }
+            return jsonify(response)
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "message": "Error processing analysis data",
+            "objects": [],
+            "caption": "Analysis error",
+            "room_description": "Analysis error",
+            "text_blocks": [],
+            "horizontal_text": [],
+            "timestamp": time.time()
+        }), 500
 
-        return render_template('video_analysis.html', 
-                               video_path=processed_video_path, 
-                               analysis=analysis_results)
-    return redirect(url_for('index'))
-
-def analyze_video(video_path):
-    """Runs analysis on a pre-recorded video."""
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+@app.route('/analyze_media', methods=['POST'])
+def analyze_media():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
     
-    # Define the codec and create VideoWriter object
-    output_filename = 'processed_' + os.path.basename(video_path)
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # or 'XVID', 'MJPG', etc.
-    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if file and allowed_file(file.filename):
+        try:
+            # Save the uploaded file
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            
+            # Read and process the image
+            if filename.lower().endswith(('png', 'jpg', 'jpeg')):
+                img = cv2.imread(filepath)
+                if img is None:
+                    return jsonify({'error': 'Could not read image'}), 400
+                
+                # Analyze the image
+                analysis = analyze_frame(img)
+                
+                # Save annotated image
+                annotated_img = img.copy()
+                
+                # Draw object detections
+                for obj in analysis.get('objects', []):
+                    x1, y1, x2, y2 = obj['bbox']
+                    label = f"{obj['class']} {obj['confidence']:.2f}"
+                    cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.rectangle(annotated_img, (x1, y1-20), (x1 + len(label)*8, y1), (0, 255, 0), -1)
+                    cv2.putText(annotated_img, label, (x1, y1-5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                
+                # Draw text detections
+                for text_block in analysis.get('text_blocks', []):
+                    points = np.array(text_block['bbox']).reshape(-1, 2).astype(np.int32)
+                    cv2.polylines(annotated_img, [points], isClosed=True, color=(0, 255, 255), thickness=2)
+                    # Add text label
+                    cv2.putText(annotated_img, text_block['text'], 
+                               (points[0][0], points[0][1] - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                
+                annotated_filename = f"annotated_{filename}"
+                annotated_path = os.path.join(app.config['UPLOAD_FOLDER'], annotated_filename)
+                cv2.imwrite(annotated_path, annotated_img)
+                
+                # Prepare response
+                response = {
+                    'type': 'image',
+                    'original': url_for('static', filename=f'uploads/{filename}'),
+                    'annotated': url_for('static', filename=f'uploads/{annotated_filename}'),
+                    'analysis': {
+                        'objects': [{'class': obj['class'], 'confidence': obj['confidence']} 
+                                  for obj in analysis.get('objects', [])],
+                        'room_description': analysis.get('room_description', 'No description available'),
+                        'text_blocks': [{'text': tb['text'], 'confidence': tb['confidence']} 
+                                      for tb in analysis.get('text_blocks', [])],
+                        'handwritten_text': analysis.get('handwritten_text', '')
+                    }
+                }
+                
+                return jsonify(response)
+                
+            else:
+                return jsonify({'error': 'Video processing not implemented yet'}), 400
+                
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    return jsonify({'error': 'File type not allowed'}), 400
 
-    all_detected_objects = []
-    video_descriptions = []
-    frame_count = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Analyze one frame per second
-        if frame_count % int(fps) == 0:
-            # Object Detection
-            results = yolo_model(frame, verbose=False)
-            for result in results:
-                for box in result.boxes:
-                    if float(box.conf) > 0.3:
-                        class_id = int(box.cls)
-                        class_name = yolo_model.names[class_id]
-                        all_detected_objects.append(class_name)
-                        x1, y1, x2, y2 = [int(i) for i in box.xyxy[0]]
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-            # Generate description for this frame
-            if frame_count % (int(fps) * 5) == 0: # Description every 5 seconds
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(rgb_frame)
-                inputs = blip_processor(pil_image, return_tensors="pt").to(blip_model.device)
-                summary_out = blip_model.generate(**inputs)
-                caption = blip_processor.decode(summary_out[0], skip_special_tokens=True)
-                video_descriptions.append(caption)
-
-        out.write(frame)
-        frame_count += 1
-
-    cap.release()
-    out.release()
-
-    analysis = {
-        "objects": list(set(all_detected_objects)),
-        "description": video_descriptions
-    }
-
-    return output_filename, analysis
-
-# --- Main Execution ---
 if __name__ == "__main__":
-    # Jetson Nano optimized Flask configuration
-    if is_jetson:
-        print("Starting Flask app optimized for Jetson Nano...")
-        # Use threaded mode for better performance on Jetson
-        app.run(host='0.0.0.0', port=5002, threaded=True, debug=False)
-    else:
-        app.run(debug=True, port=5002)
+    # Create necessary directories
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    
+    # Run the app
+    try:
+        app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
+    finally:
+        # Cleanup
+        if 'video_capture' in globals() and video_capture is not None:
+            video_capture.release()

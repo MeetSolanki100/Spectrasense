@@ -1,103 +1,165 @@
+/* General Styles */
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: #f4f4f9;
-    color: #333;
-    margin: 0;
-    padding: 20px;
-    display: flex;
-    justify-content: center;
+    background-color: #f8f9fa;
 }
 
-.container {
-    background-color: #fff;
-    padding: 30px;
+/* Navigation */
+.navbar {
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Cards */
+.card {
+    border: none;
     border-radius: 10px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-    width: 90%;
-    max-width: 1000px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease;
+    margin-bottom: 1.5rem;
 }
 
-h1 {
-    text-align: center;
-    color: #4a4a4a;
-    margin-bottom: 10px;
+.card:hover {
+    transform: translateY(-5px);
 }
 
-p {
-    text-align: center;
-    color: #666;
-    margin-bottom: 30px;
+.card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #eee;
+    font-weight: 600;
 }
 
-.results {
-    display: flex;
-    gap: 30px;
-    margin-top: 20px;
-}
-
-.menu-options {
-    text-align: center;
-    margin-top: 30px;
-}
-
-.button {
-    display: inline-block;
-    padding: 15px 30px;
-    margin: 10px;
-    background-color: #007bff;
-    color: white;
-    text-decoration: none;
+/* Buttons */
+.btn {
+    padding: 0.5rem 1.25rem;
     border-radius: 5px;
-    font-size: 1.2em;
-    transition: background-color 0.3s;
+    font-weight: 500;
+    transition: all 0.2s;
 }
 
-.button:hover {
-    background-color: #0056b3;
+.btn i {
+    margin-right: 0.5rem;
 }
 
-h2 {
-    text-align: center;
-    color: #4a4a4a;
-    margin-bottom: 20px;
-}
-
-.video-container {
-    flex: 2;
-    background-color: #000;
-    border-radius: 8px;
+/* Analysis Panel */
+.analysis-panel {
+    height: 100%;
+    border-radius: 10px;
     overflow: hidden;
 }
 
-.video-container img {
+/* Camera Feed */
+.camera-container {
+    position: relative;
+    background-color: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+#video-feed {
     width: 100%;
     display: block;
 }
 
-.analysis-details {
-    flex: 1;
-    background-color: #fafafa;
-    padding: 20px;
-    border-radius: 8px;
-    height: fit-content;
+/* Loading Spinner */
+.loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
 }
 
-h3 {
-    color: #007bff;
-    border-bottom: 2px solid #007bff;
-    padding-bottom: 5px;
-    margin-top: 0;
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    .camera-container {
+        margin-bottom: 1.5rem;
+    }
+    
+    .btn {
+        width: 100%;
+        margin-bottom: 0.5rem;
+    }
 }
 
-ul {
-    list-style-type: none;
-    padding: 0;
+/* Badges */
+.badge {
+    font-weight: 500;
+    padding: 0.5em 0.8em;
+    margin: 0.2em;
 }
 
-li {
-    background-color: #fff;
-    border: 1px solid #eee;
-    padding: 10px;
-    margin-bottom: 5px;
-    border-radius: 4px;
+/* Form Styling */
+.form-control {
+    padding: 0.75rem;
+    border-radius: 5px;
+    border: 1px solid #ced4da;
+}
+
+.form-control:focus {
+    border-color: #86b7fe;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+/* Alert Messages */
+.alert {
+    border-radius: 5px;
+    margin-bottom: 1rem;
+}
+
+/* Utility Classes */
+.mt-6 {
+    margin-top: 4rem;
+}
+
+.mb-6 {
+    margin-bottom: 4rem;
+}
+
+/* Animation for analysis updates */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.analysis-update {
+    animation: fadeIn 0.3s ease-out;
+}
+.text-highlight {
+    background-color: #fff3cd;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-family: monospace;
+}
+
+.analysis-update {
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.card {
+    margin-bottom: 1rem;
+    border: 1px solid rgba(0,0,0,.125);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid rgba(0,0,0,.125);
+    padding: 0.75rem 1.25rem;
+    font-weight: 600;
+}
+
+.card-body {
+    padding: 1.25rem;
 }

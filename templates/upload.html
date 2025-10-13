@@ -1,20 +1,127 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload Video</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-    <div class="container">
-        <h1>Pre-recorded Video Analysis</h1>
-        <p>Upload a video file for environmental analysis.</p>
-        <form action="/upload_video" method="post" enctype="multipart/form-data">
-            <input type="file" name="video" accept="video/*" required>
-            <input type="submit" value="Upload and Analyze">
-        </form>
-        <a href="/" class="button">Back to Home</a>
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h2 class="mb-4">Upload Media for Analysis</h2>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <form id="upload-form" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="media-upload" class="form-label">Select Image or Video</label>
+                        <input class="form-control" type="file" id="media-upload" accept="image/*,video/*" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-upload me-2"></i> Upload & Analyze
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div id="analysis-result" class="card" style="display: none;">
+            <div class="card-header">
+                <h4 class="mb-0">Analysis Results</h4>
+            </div>
+            <div class="card-body">
+                <div id="media-container" class="text-center mb-3"></div>
+                <div id="result-content"></div>
+            </div>
+        </div>
     </div>
-</body>
-</html>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$(document).ready(function() {
+    const form = $('#upload-form');
+    const loading = $('#loading');
+    const resultSection = $('#analysis-result');
+    const mediaContainer = $('#media-container');
+    const resultContent = $('#result-content');
+
+    form.on('submit', function(e) {
+        e.preventDefault();
+        
+        const fileInput = document.getElementById('media-upload');
+        if (!fileInput.files.length) return;
+        
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        loading.show();
+        resultSection.hide();
+        
+        $.ajax({
+            url: '/analyze_media',
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                // Display the media
+                if (response.type === 'image') {
+                    mediaContainer.html(`
+                        <div class="row">
+                            <div class="col-md-6">
+                                <p class="text-muted">Original</p>
+                                <img src="${response.original}" class="img-fluid mb-3">
+                            </div>
+                            <div class="col-md-6">
+                                <p class="text-muted">Annotated</p>
+                                <img src="${response.annotated}" class="img-fluid mb-3">
+                            </div>
+                        </div>
+                    `);
+                }
+                
+                // Display analysis results
+                let html = '';
+                const analysis = response.analysis || {};
+                
+                if (analysis.caption) {
+                    html += `<p><strong>Caption:</strong> ${analysis.caption}</p>`;
+                }
+                
+                if (analysis.objects && analysis.objects.length > 0) {
+                    const uniqueObjects = [...new Set(analysis.objects.map(obj => obj.class))];
+                    html += `<p><strong>Detected Objects:</strong></p><div>`;
+                    uniqueObjects.forEach(obj => {
+                        html += `<span class="badge bg-primary me-1 mb-1">${obj}</span>`;
+                    });
+                    html += `</div>`;
+                }
+
+                if (analysis.text_blocks && analysis.text_blocks.length > 0) {
+                    html += `<hr><p><strong>Detected Text:</strong></p><ul>`;
+                    analysis.text_blocks.forEach(block => {
+                        html += `<li>${block.text} (Confidence: ${(block.confidence * 100).toFixed(2)}%)</li>`;
+                    });
+                    html += `</ul>`;
+                }
+
+                if (analysis.handwritten_text) {
+                    html += `<hr><p><strong>Handwritten Text:</strong></p><p>${analysis.handwritten_text}</p>`;
+                }
+                
+                resultContent.html(html || '<p class="text-muted">No analysis results available.</p>');
+                resultSection.show();
+                loading.hide();
+                
+                // Scroll to results
+                $('html, body').animate({
+                    scrollTop: resultSection.offset().top - 20
+                }, 500);
+            },
+            error: function(xhr) {
+                const errorMsg = xhr.responseJSON?.error || 'An unknown error occurred';
+                alert('Error analyzing media: ' + errorMsg);
+                loading.hide();
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

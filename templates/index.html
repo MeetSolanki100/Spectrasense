@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 text-center">
+        <h1 class="mb-4">Vision Encoder</h1>
+        <p class="lead">Advanced computer vision and OCR system powered by YOLO and BLIP</p>
+        
+        <div class="row mt-5">
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <i class="fas fa-video fa-3x mb-3 text-primary"></i>
+                        <h3>Real-time Analysis</h3>
+                        <p>Analyze live video feed from your camera with real-time object detection.</p>
+                        <a href="/real_time" class="btn btn-primary">Start Live Analysis</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <i class="fas fa-upload fa-3x mb-3 text-success"></i>
+                        <h3>Upload Media</h3>
+                        <p>Upload images or videos for analysis and get detailed insights.</p>
+                        <a href="/upload_page" class="btn btn-success">Upload Now</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

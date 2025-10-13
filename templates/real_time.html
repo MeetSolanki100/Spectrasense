@@ -1,76 +1,224 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vision Analysis</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-    <div class="container">
-        <h1>Real-Time Environmental Analysis</h1>
-        <p>Control your webcam and see the real-time analysis.</p>
+{% extends "base.html" %}
 
-        <div class="controls">
-            <button id="start-camera">Start Camera</button>
-            <button id="stop-camera">Stop Camera</button>
-        </div>
-
-        <div class="results">
-            <div class="video-container">
-                <h3>Live Feed</h3>
-                <img src="{{ url_for('video_feed') }}" alt="Video Feed" id="video-feed">
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h2 class="mb-4">Real-time Analysis</h2>
+        <div class="card mb-3">
+            <div class="card-body text-center">
+                <img src="{{ url_for('video_feed') }}" width="100%" class="img-fluid">
             </div>
-
-            <div class="analysis-details">
-                <h3>Room Description</h3>
-                <pre id="description">Camera is off. Press 'Start Camera' to begin analysis.</pre>
-
-                            </div>
         </div>
     </div>
-
-    <script>
-        function updateAnalysis() {
-            fetch('/analysis_data')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('description').textContent = data.description;
-                })
-                .catch(error => console.error('Error fetching analysis data:', error));
-        }
-
-        // Update the analysis every 3 seconds
-        let analysisInterval = setInterval(updateAnalysis, 3000);
-
-        document.getElementById('start-camera').addEventListener('click', () => {
-            fetch('/start_camera')
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.status);
-                    document.getElementById('video-feed').style.display = 'block';
-                    if (!analysisInterval) {
-                        analysisInterval = setInterval(updateAnalysis, 3000);
-                    }
-                });
-        });
-
-        document.getElementById('stop-camera').addEventListener('click', () => {
-            fetch('/stop_camera')
-                .then(response => response.json())
-                .then(data => {
-                    console.log(data.status);
-                    document.getElementById('video-feed').style.display = 'none';
-                    clearInterval(analysisInterval);
-                    analysisInterval = null; // Clear the interval ID
-                });
-        });
-
-        // Initially hide the video feed until started
-        document.getElementById('video-feed').style.display = 'none';
-
-    </script>
-    <a href="/" class="button">Back to Home</a>
+    <div class="col-md-4">
+        <h4 class="mb-3">Analysis Results</h4>
+        <div id="analysis-results"></div>
     </div>
-</body>
-</html>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Global variables
+let lastUpdateTime = null;
+let retryCount = 0;
+const MAX_RETRIES = 3;
+let isCameraInitialized = false;
+let analysisInterval = null;
+
+// Initialize camera and start analysis
+function initializeCamera() {
+    return new Promise((resolve, reject) => {
+        $.ajax({
+            url: '/start_camera',
+            method: 'GET',
+            success: function(response) {
+                if (response.status === 'success') {
+                    isCameraInitialized = true;
+                    resolve();
+                } else {
+                    reject(new Error(response.message || 'Failed to initialize camera'));
+                }
+            },
+            error: function(xhr) {
+                const errorMsg = xhr.responseJSON?.message || 'Failed to connect to camera';
+                reject(new Error(errorMsg));
+            }
+        });
+    });
+}
+
+// Initialize the application
+$(document).ready(function() {
+    // Show loading state
+    const resultsDiv = $('#analysis-results');
+    resultsDiv.html(`
+        <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Initializing camera and analysis...</p>
+        </div>`
+    );
+
+    // Initialize camera and start analysis
+    initializeCamera()
+        .then(() => {
+            // Start periodic analysis updates
+            updateAnalysis();
+            analysisInterval = setInterval(updateAnalysis, 2000); // Update every 2 seconds
+        })
+        .catch(error => {
+            console.error('Initialization error:', error);
+            resultsDiv.html(`
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    Failed to initialize camera: ${error.message}
+                    <button class="btn btn-sm btn-outline-primary ms-2" onclick="window.location.reload()">
+                        Retry
+                    </button>
+                </div>`
+            );
+        });
+
+    // Clean up on page unload
+    $(window).on('beforeunload', function() {
+        if (analysisInterval) {
+            clearInterval(analysisInterval);
+        }
+        // Stop camera when leaving the page
+        $.get('/stop_camera');
+    });
+});
+
+function updateAnalysis() {
+    const resultsDiv = $('#analysis-results');
+    const loadingHtml = `
+        <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2 text-muted">Analyzing video feed...</p>
+        </div>`;
+
+    // Show loading state
+    if (resultsDiv.html().trim() === '') {
+        resultsDiv.html(loadingHtml);
+    } else {
+        resultsDiv.addClass('opacity-50');
+    }
+
+    // Add timestamp to prevent caching
+    const timestamp = new Date().getTime();
+    const url = `/analysis_data?_=${timestamp}`;
+
+    $.ajax({
+        url: url,
+        method: 'GET',
+        dataType: 'json',
+        timeout: 10000, // 10 seconds timeout
+        success: function(data) {
+            retryCount = 0; // Reset retry counter on success
+            let html = '';
+            lastUpdateTime = new Date();
+            
+            // Add timestamp
+            html += `<div class="small text-muted mb-3">Last updated: ${lastUpdateTime.toLocaleTimeString()}</div>`;
+            
+            // Display room description
+            if (data.caption) {
+                html += `<div class="card mb-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Room Description</span>
+                        <span class="badge bg-success">${data.caption_confidence ? (data.caption_confidence * 100).toFixed(0) + '%' : 'High'}</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-text">${data.caption}</p>
+                    </div>
+                </div>`;
+            }
+            
+            // Display detected objects
+            if (data.objects && data.objects.length > 0) {
+                const uniqueObjects = [...new Set(data.objects)];
+                html += `<div class="card mb-3">
+                    <div class="card-header">Detected Objects (${uniqueObjects.length})</div>
+                    <div class="card-body">
+                        <div class="d-flex flex-wrap">`;
+                uniqueObjects.forEach(obj => {
+                    html += `<span class="badge bg-primary me-1 mb-1">${obj}</span>`;
+                });
+                html += `</div></div></div>`;
+            }
+            
+            // Display detected text
+            if (data.text_blocks && data.text_blocks.length > 0) {
+                html += `<div class="card mb-3">
+                    <div class="card-header">Detected Text (${data.text_blocks.length})</div>
+                    <div class="card-body">`;
+                data.text_blocks.forEach(tb => {
+                    const confidencePercent = (tb.confidence * 100).toFixed(1);
+                    const confidenceClass = tb.confidence > 0.7 ? 'text-success' : 
+                                          tb.confidence > 0.4 ? 'text-warning' : 'text-danger';
+                    html += `<div class="mb-2">
+                        <div class="text-highlight p-2 rounded">
+                            <div>${tb.text}</div>
+                            <small class="${confidenceClass}">Confidence: ${confidencePercent}%</small>
+                        </div>
+                    </div>`;
+                });
+                html += `</div></div>`;
+            }
+
+            // Display handwritten text
+            if (data.handwritten_text) {
+                html += `<div class="card mb-3">
+                    <div class="card-header">Handwritten Text</div>
+                    <div class="card-body">
+                        <p class="card-text">${data.handwritten_text}</p>
+                    </div>
+                </div>`;
+            }
+            
+            // Update the results container with fade animation
+            if (html === '') {
+                resultsDiv.html('<div class="alert alert-info">No analysis results yet. Try adjusting the camera angle or lighting.</div>');
+            } else {
+                resultsDiv.html(html);
+            }
+            
+            resultsDiv.removeClass('opacity-50').addClass('analysis-update');
+            setTimeout(() => resultsDiv.removeClass('analysis-update'), 300);
+        },
+        error: function(xhr, status, error) {
+            retryCount++;
+            let errorMessage = 'Error loading analysis data. ';
+            
+            if (status === 'timeout') {
+                errorMessage += 'Request timed out.';
+            } else if (xhr.responseJSON && xhr.responseJSON.error) {
+                errorMessage += xhr.responseJSON.error;
+            } else {
+                errorMessage += 'Please try again.';
+            }
+            
+            if (retryCount < MAX_RETRIES) {
+                errorMessage += ` Retrying (${retryCount}/${MAX_RETRIES})...`;
+                setTimeout(updateAnalysis, 2000 * retryCount); // Exponential backoff
+            } else {
+                errorMessage += ' Please refresh the page to try again.';
+            }
+            
+            resultsDiv.html(`
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    ${errorMessage}
+                </div>
+            `).removeClass('opacity-50');
+            
+            console.error('Analysis error:', status, error);
+        }
+    });
+}
+</script>
+{% endblock %}

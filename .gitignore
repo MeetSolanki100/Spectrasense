@@ -1,5 +1,5 @@
 chatbot_env
-
+testing
 # Model files
 models/whisper/
 *.pt

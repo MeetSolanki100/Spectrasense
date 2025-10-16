@@ -23,26 +23,11 @@ class TextToSpeech:
         # engine.stop()
         # return output_file
         try:
-            client = ElevenLabs(  base_url="https://api.elevenlabs.io",
-                            api_key=os.getenv("ELEVENLABS_API_KEY") )
-
-
-            audio = client.text_to_speech.convert(
-                voice_id="JBFqnCBsd6RMkjVDRZzb",
-                output_format="mp3_44100_128",
-                text=response,
-                model_id="eleven_multilingual_v2"
-            )
-
-            with open(output_file, "wb") as f:
-                for chunk in audio:
-                    if isinstance(chunk, bytes):
-                        f.write(chunk)
-            return output_file
-        except Exception as e:
-                print(f"ElevenLabs TTS error: {e}")
                 from gtts import gTTS
                 tts = gTTS(text=response, slow=False)
                 tts.save(output_file)
                 # os.system("start output.mp3") # For playing on Windows
                 return output_file
+        except Exception as e:
+                print(f"Google TTS error: {e}")
+                

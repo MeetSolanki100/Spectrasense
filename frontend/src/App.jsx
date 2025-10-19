@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Send, Trash2, RefreshCw, MessageSquare, Settings, Database } from 'lucide-react';
+import { Mic, Send, Trash2, RefreshCw, MessageSquare, Settings, Database, Camera, Upload, Eye, UserPlus, Users } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:8000';
+const FACE_REC_API = 'http://localhost:5006';
 
 export default function App() {
   const [chats, setChats] = useState([]);
@@ -14,6 +15,27 @@ export default function App() {
   const [targetLang, setTargetLang] = useState('hi');
   const [ws, setWs] = useState(null);
   const chatEndRef = useRef(null);
+  
+  // Vision-related states
+  const [visionStatus, setVisionStatus] = useState(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [realtimeAnalysis, setRealtimeAnalysis] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [uploadedImage, setUploadedImage] = useState(null);
+  const [annotatedImage, setAnnotatedImage] = useState(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const streamRef = useRef(null);
+  const analysisIntervalRef = useRef(null);
+
+  // Face Recognition states
+  const [faceRecMonitoring, setFaceRecMonitoring] = useState(false);
+  const [latestIdentification, setLatestIdentification] = useState(null);
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [newPersonName, setNewPersonName] = useState('');
+  const [videoFeedUrl, setVideoFeedUrl] = useState('');
+  const identificationIntervalRef = useRef(null);
 
   useEffect(() => {
     fetchChats();
@@ -190,6 +212,306 @@ export default function App() {
     return date.toLocaleString();
   };
 
+  // Vision Encoder Functions
+  const fetchVisionStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/vision/status`);
+      const data = await response.json();
+      setVisionStatus(data);
+    } catch (error) {
+      console.error('Failed to fetch vision status:', error);
+    }
+  };
+
+  const initializeVisionEncoder = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/vision/initialize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        alert('Vision Encoder initialized successfully!');
+        await fetchVisionStatus();
+      }
+    } catch (error) {
+      console.error('Failed to initialize vision encoder:', error);
+      alert('Failed to initialize vision encoder');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 1280, height: 720 } 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        streamRef.current = stream;
+        setCameraActive(true);
+      }
+    } catch (error) {
+      console.error('Failed to start camera:', error);
+      alert('Failed to access camera. Please ensure camera permissions are granted.');
+    }
+  };
+
+  const toggleRealtimeAnalysis = () => {
+    setRealtimeAnalysis(!realtimeAnalysis);
+  };
+
+  // Effect to handle real-time analysis
+  useEffect(() => {
+    if (realtimeAnalysis && cameraActive) {
+      // Start continuous analysis
+      analysisIntervalRef.current = setInterval(() => {
+        captureAndAnalyzeRealtime();
+      }, 1000); // Analyze every 1 second
+    } else {
+      // Stop continuous analysis
+      if (analysisIntervalRef.current) {
+        clearInterval(analysisIntervalRef.current);
+        analysisIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (analysisIntervalRef.current) {
+        clearInterval(analysisIntervalRef.current);
+      }
+    };
+  }, [realtimeAnalysis, cameraActive]);
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    setRealtimeAnalysis(false);
+  };
+
+  const captureAndAnalyze = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    
+    setLoading(true);
+    try {
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      
+      const base64Image = canvas.toDataURL('image/jpeg').split(',')[1];
+      
+      const response = await fetch(`${API_BASE_URL}/api/vision/analyze-frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64Image })
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAnalysisResult(data.analysis);
+      }
+    } catch (error) {
+      console.error('Failed to analyze frame:', error);
+      alert('Failed to analyze frame');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const captureAndAnalyzeRealtime = async () => {
+    if (!videoRef.current || !canvasRef.current || loading) return;
+    
+    try {
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      
+      const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1]; // Lower quality for speed
+      
+      const response = await fetch(`${API_BASE_URL}/api/vision/analyze-frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64Image })
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAnalysisResult(data.analysis);
+      }
+    } catch (error) {
+      console.error('Real-time analysis error:', error);
+      // Don't show alert for real-time errors to avoid spam
+    }
+  };
+
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await fetch(`${API_BASE_URL}/api/vision/analyze`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAnalysisResult(data.analysis);
+        setUploadedImage(`data:image/jpeg;base64,${data.images.original}`);
+        setAnnotatedImage(`data:image/jpeg;base64,${data.images.annotated}`);
+      }
+    } catch (error) {
+      console.error('Failed to analyze image:', error);
+      alert('Failed to analyze image');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'vision') {
+      fetchVisionStatus();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
+  // Face Recognition Functions
+  const startFaceRecMonitoring = async () => {
+    try {
+      console.log('Attempting to start face recognition monitoring...');
+      console.log('Connecting to:', `${FACE_REC_API}/start_monitoring`);
+      
+      const response = await fetch(`${FACE_REC_API}/start_monitoring`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.text();
+      console.log('Start monitoring response:', result);
+      
+      setFaceRecMonitoring(true);
+      
+      // Set video feed URL - no timestamp needed for MJPEG stream
+      // The browser will handle the continuous multipart stream automatically
+      setVideoFeedUrl(`${FACE_REC_API}/video_feed`);
+      console.log('Video feed URL set:', `${FACE_REC_API}/video_feed`);
+      
+      // Poll for identification updates every 2 seconds
+      identificationIntervalRef.current = setInterval(async () => {
+        try {
+          const response = await fetch(`${FACE_REC_API}/latest_identification`);
+          const data = await response.json();
+          setLatestIdentification(data);
+        } catch (error) {
+          console.error('Failed to fetch identification:', error);
+        }
+      }, 2000);
+      
+      console.log('Face recognition monitoring started successfully!');
+    } catch (error) {
+      console.error('Failed to start monitoring:', error);
+      alert(`Failed to start face recognition monitoring.\n\nError: ${error.message}\n\nMake sure the Face Recognition backend is running on port 5006.\n\nIf Vision Encoder is using the camera, stop it first.`);
+    }
+  };
+
+  const stopFaceRecMonitoring = async () => {
+    try {
+      await fetch(`${FACE_REC_API}/stop_monitoring`);
+      setFaceRecMonitoring(false);
+      setVideoFeedUrl('');
+      
+      if (identificationIntervalRef.current) {
+        clearInterval(identificationIntervalRef.current);
+        identificationIntervalRef.current = null;
+      }
+      setLatestIdentification(null);
+    } catch (error) {
+      console.error('Failed to stop monitoring:', error);
+    }
+  };
+
+  const registerNewFace = async () => {
+    if (!newPersonName.trim()) {
+      alert('Please enter a name');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${FACE_REC_API}/register_face`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newPersonName })
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        alert(`Successfully registered ${newPersonName}!`);
+        setShowRegisterModal(false);
+        setNewPersonName('');
+      } else {
+        alert(data.message || 'Failed to register face');
+      }
+    } catch (error) {
+      console.error('Failed to register face:', error);
+      alert('Failed to register face');
+    }
+  };
+
+  const clearKnownFaces = async () => {
+    if (!confirm('Are you sure you want to clear all known faces? This cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${FACE_REC_API}/clear_faces`, {
+        method: 'POST'
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        alert('All known faces cleared successfully');
+        setLatestIdentification(null);
+      }
+    } catch (error) {
+      console.error('Failed to clear faces:', error);
+      alert('Failed to clear known faces');
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (identificationIntervalRef.current) {
+        clearInterval(identificationIntervalRef.current);
+      }
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
       {/* Header */}
@@ -234,6 +556,28 @@ export default function App() {
           >
             <MessageSquare className="w-4 h-4 inline mr-2" />
             Chat
+          </button>
+          <button
+            onClick={() => setActiveTab('vision')}
+            className={`flex-1 py-2 px-4 rounded-lg transition-all ${
+              activeTab === 'vision'
+                ? 'bg-purple-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Eye className="w-4 h-4 inline mr-2" />
+            Vision
+          </button>
+          <button
+            onClick={() => setActiveTab('faceRec')}
+            className={`flex-1 py-2 px-4 rounded-lg transition-all ${
+              activeTab === 'faceRec'
+                ? 'bg-purple-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Users className="w-4 h-4 inline mr-2" />
+            Face Rec
           </button>
           <button
             onClick={() => setActiveTab('history')}
@@ -393,6 +737,380 @@ export default function App() {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'vision' && (
+          <div className="space-y-6">
+            {/* Vision Status */}
+            <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">Vision Encoder</h2>
+                <div className="flex items-center space-x-2">
+                  {visionStatus && (
+                    <div className={`px-3 py-1 rounded-full text-sm ${
+                      visionStatus.models_loaded ? 'bg-green-500' : 'bg-yellow-500'
+                    } bg-opacity-20`}>
+                      {visionStatus.models_loaded ? '● Models Loaded' : '● Not Initialized'}
+                    </div>
+                  )}
+                  <button
+                    onClick={initializeVisionEncoder}
+                    disabled={loading || (visionStatus && visionStatus.models_loaded)}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Initialize Models
+                  </button>
+                </div>
+              </div>
+              {visionStatus && (
+                <p className="text-sm text-gray-400">Device: {visionStatus.device}</p>
+              )}
+            </div>
+
+            {/* Camera Section */}
+            <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+              <h3 className="text-lg font-bold mb-4">Real-Time Camera Analysis</h3>
+              
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={cameraActive ? stopCamera : startCamera}
+                    className={`px-4 py-2 rounded-lg transition-all ${
+                      cameraActive ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
+                    }`}
+                  >
+                    <Camera className="w-4 h-4 inline mr-2" />
+                    {cameraActive ? 'Stop Camera' : 'Start Camera'}
+                  </button>
+                  
+                  {cameraActive && (
+                    <>
+                      <button
+                        onClick={toggleRealtimeAnalysis}
+                        className={`px-4 py-2 rounded-lg transition-all ${
+                          realtimeAnalysis 
+                            ? 'bg-orange-600 hover:bg-orange-700' 
+                            : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                      >
+                        <RefreshCw className={`w-4 h-4 inline mr-2 ${realtimeAnalysis ? 'animate-spin' : ''}`} />
+                        {realtimeAnalysis ? 'Stop Real-Time' : 'Start Real-Time'}
+                      </button>
+                      
+                      {!realtimeAnalysis && (
+                        <button
+                          onClick={captureAndAnalyze}
+                          disabled={loading}
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all disabled:opacity-50"
+                        >
+                          {loading ? <RefreshCw className="w-4 h-4 inline mr-2 animate-spin" /> : <Eye className="w-4 h-4 inline mr-2" />}
+                          Analyze Once
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                
+                {realtimeAnalysis && (
+                  <div className="bg-blue-600 bg-opacity-20 rounded-lg p-3 border border-blue-500 border-opacity-30">
+                    <p className="text-sm text-blue-300">
+                      <RefreshCw className="w-4 h-4 inline mr-2 animate-spin" />
+                      Real-time analysis active - Analyzing every second
+                    </p>
+                  </div>
+                )}
+
+                <div className="relative bg-gray-900 rounded-lg overflow-hidden" style={{ minHeight: '400px' }}>
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-auto"
+                    style={{ display: cameraActive ? 'block' : 'none' }}
+                  />
+                  {!cameraActive && (
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                      <div className="text-center">
+                        <Camera className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                        <p>Camera not active</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <canvas ref={canvasRef} style={{ display: 'none' }} />
+              </div>
+            </div>
+
+            {/* Upload Section */}
+            <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+              <h3 className="text-lg font-bold mb-4">Upload Image for Analysis</h3>
+              
+              <div className="space-y-4">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all disabled:opacity-50"
+                >
+                  <Upload className="w-4 h-4 inline mr-2" />
+                  Upload Image
+                </button>
+
+                {(uploadedImage || annotatedImage) && (
+                  <div className="grid grid-cols-2 gap-4">
+                    {uploadedImage && (
+                      <div>
+                        <p className="text-sm text-gray-400 mb-2">Original</p>
+                        <img src={uploadedImage} alt="Original" className="w-full rounded-lg" />
+                      </div>
+                    )}
+                    {annotatedImage && (
+                      <div>
+                        <p className="text-sm text-gray-400 mb-2">Annotated</p>
+                        <img src={annotatedImage} alt="Annotated" className="w-full rounded-lg" />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Analysis Results */}
+            {analysisResult && (
+              <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+                <h3 className="text-lg font-bold mb-4">Analysis Results</h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-semibold text-purple-400 mb-2">Room Description</h4>
+                    <p className="text-gray-300">{analysisResult.room_description}</p>
+                  </div>
+
+                  {analysisResult.objects && analysisResult.objects.length > 0 && (
+                    <div>
+                      <h4 className="font-semibold text-green-400 mb-2">Detected Objects</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {analysisResult.objects.map((obj, idx) => (
+                          <span key={idx} className="px-3 py-1 bg-green-600 bg-opacity-30 rounded-full text-sm">
+                            {typeof obj === 'string' ? obj : `${obj.class} (${(obj.confidence * 100).toFixed(0)}%)`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {analysisResult.text_blocks && analysisResult.text_blocks.length > 0 && (
+                    <div>
+                      <h4 className="font-semibold text-yellow-400 mb-2">Detected Text</h4>
+                      <div className="space-y-2">
+                        {analysisResult.text_blocks.map((block, idx) => (
+                          <div key={idx} className="bg-yellow-600 bg-opacity-20 rounded-lg p-3">
+                            <p className="font-mono">
+                              {typeof block === 'string' ? block : block.text}
+                              {block.confidence && (
+                                <span className="text-xs text-gray-400 ml-2">
+                                  ({(block.confidence * 100).toFixed(0)}%)
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {analysisResult.handwritten_text && (
+                    <div>
+                      <h4 className="font-semibold text-blue-400 mb-2">Handwritten Text</h4>
+                      <div className="bg-blue-600 bg-opacity-20 rounded-lg p-3">
+                        <p className="font-mono">{analysisResult.handwritten_text}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'faceRec' && (
+          <div className="space-y-6">
+            {/* Face Recognition Control Panel */}
+            <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold">Face Recognition Monitor</h2>
+                <div className={`px-3 py-1 rounded-full text-sm ${
+                  faceRecMonitoring ? 'bg-green-500 bg-opacity-20 text-green-400' : 'bg-gray-500 bg-opacity-20 text-gray-400'
+                }`}>
+                  {faceRecMonitoring ? '● Active' : '● Inactive'}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3 mb-6">
+                <button
+                  onClick={faceRecMonitoring ? stopFaceRecMonitoring : startFaceRecMonitoring}
+                  className={`px-4 py-2 rounded-lg transition-all ${
+                    faceRecMonitoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
+                  }`}
+                >
+                  <Users className="w-4 h-4 inline mr-2" />
+                  {faceRecMonitoring ? 'Stop Monitoring' : 'Start Monitoring'}
+                </button>
+
+                <button
+                  onClick={clearKnownFaces}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-all"
+                >
+                  <Trash2 className="w-4 h-4 inline mr-2" />
+                  Clear Known Faces
+                </button>
+              </div>
+
+              {/* Video Feed */}
+              <div className="relative bg-gray-900 rounded-lg overflow-hidden" style={{ minHeight: '480px' }}>
+                {faceRecMonitoring && videoFeedUrl ? (
+                  <img
+                    src={videoFeedUrl}
+                    alt="Face Recognition Feed"
+                    className="w-full h-auto"
+                    style={{ maxHeight: '640px', objectFit: 'contain' }}
+                    onError={(e) => {
+                      console.error('Video feed error - check if camera is available');
+                      console.error('Make sure Vision Encoder camera is stopped');
+                    }}
+                    onLoad={() => {
+                      console.log('Video feed stream connected successfully');
+                    }}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                    <div className="text-center">
+                      <Users className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p>Face Recognition Inactive</p>
+                      <p className="text-sm mt-2">Click "Start Monitoring" to begin</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Identification Info */}
+            {latestIdentification && latestIdentification.name && (
+              <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+                <h3 className="text-lg font-bold mb-4">Latest Identification</h3>
+                
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Name:</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold ${
+                        latestIdentification.is_unknown ? 'text-yellow-400' : 'text-green-400'
+                      }`}>
+                        {latestIdentification.name}
+                      </span>
+                      {latestIdentification.is_unknown && (
+                        <button
+                          onClick={() => setShowRegisterModal(true)}
+                          className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 rounded-lg text-sm transition-all"
+                        >
+                          <UserPlus className="w-3 h-3 inline mr-1" />
+                          Register
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {latestIdentification.time && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400">Time:</span>
+                      <span className="font-mono">{latestIdentification.time}</span>
+                    </div>
+                  )}
+
+                  {latestIdentification.location && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400">Location:</span>
+                      <span>{latestIdentification.location}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Info Panel */}
+            <div className="bg-black bg-opacity-30 backdrop-blur-lg rounded-xl p-6 border border-purple-500 border-opacity-30">
+              <h3 className="text-lg font-bold mb-4">How It Works</h3>
+              
+              <div className="space-y-3 text-sm text-gray-300">
+                <div className="flex items-start gap-3">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2"></div>
+                  <div>
+                    <strong className="text-green-400">Green Box:</strong> Known person identified
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="w-2 h-2 bg-yellow-500 rounded-full mt-2"></div>
+                  <div>
+                    <strong className="text-yellow-400">Yellow Box:</strong> Unknown person detected - click Register to add them
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="w-2 h-2 bg-red-500 rounded-full mt-2"></div>
+                  <div>
+                    <strong className="text-red-400">No Box:</strong> Anti-spoofing detected fake face (photo/video)
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Register Face Modal */}
+        {showRegisterModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-gray-900 rounded-xl p-6 max-w-md w-full mx-4 border border-purple-500">
+              <h3 className="text-xl font-bold mb-4">Register New Face</h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Person's Name</label>
+                  <input
+                    type="text"
+                    value={newPersonName}
+                    onChange={(e) => setNewPersonName(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && registerNewFace()}
+                    placeholder="Enter name"
+                    className="w-full bg-gray-800 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={registerNewFace}
+                    className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-all"
+                  >
+                    Register
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowRegisterModal(false);
+                      setNewPersonName('');
+                    }}
+                    className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

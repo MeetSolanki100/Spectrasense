@@ -5,7 +5,6 @@ models/whisper/
 *.pt
 *.pth
 *.ckpt
-*.bin
 
 # Audio files
 *.wav
@@ -16,3 +15,29 @@ models/whisper/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Build files
+frontend/dist/
+frontend/build/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+backend/*.log
+
+# Database files
+*.sqlite3
+chroma_db/*.sqlite3
+chroma_db/**/*.bin
+
+# OS files
+.DS_Store
+*.swp
+*.swo

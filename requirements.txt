@@ -127,3 +127,7 @@ websockets
 zipp
 gTTS
 indic-nlp-library
+opencv-python
+easyocr
+ultralytics
+yolov5

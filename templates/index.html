@@ -91,22 +91,6 @@
         startBtn.addEventListener('click', startMonitoring);
         stopBtn.addEventListener('click', stopMonitoring);
 
-        function updateIdentificationInfo() {
-            fetch('/latest_identification')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.name) {
-                        document.getElementById('name').textContent = data.name;
-                        document.getElementById('time').textContent = data.time;
-                        document.getElementById('location').textContent = data.location;
-                    } else {
-                        document.getElementById('name').textContent = '';
-                        document.getElementById('time').textContent = '';
-                        document.getElementById('location').textContent = '';
-                    }
-                });
-        }
-
         // Control buttons
         const clearFacesBtn = document.getElementById('clear-faces-btn');
         

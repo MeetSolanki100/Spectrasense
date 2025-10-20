@@ -13,8 +13,8 @@ import platform
 import json
 import re
 from pathlib import Path
-import easyocr
-from transformers import BlipProcessor, BlipForConditionalGeneration, TrOCRProcessor, VisionEncoderDecoderModel
+import pytesseract
+from transformers import BlipProcessor, BlipForConditionalGeneration
 
 # Initialize Flask app with static folder
 app = Flask(__name__, static_folder='static', static_url_path='')
@@ -24,15 +24,12 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Configuration
 YOLO_MODEL = 'yolov8s.pt'
 BLIP_MODEL = "Salesforce/blip-image-captioning-base"
-TEXT_DETECTION_CONFIDENCE = 0.5
+TEXT_DETECTION_CONFIDENCE = 0.25  # Lowered further to catch more text
 
 # Initialize models and device
 yolo_model = None
 blip_processor = None
 blip_model = None
-easyocr_reader = None
-trocr_processor = None
-trocr_model = None
 device = None
 is_jetson = platform.machine() == 'aarch64' and 'jetson' in platform.platform().lower()
 
@@ -46,7 +43,7 @@ def get_optimal_device():
 
 def initialize_models():
     """Initialize all required models with error handling."""
-    global yolo_model, blip_processor, blip_model, easyocr_reader, trocr_processor, trocr_model, device
+    global yolo_model, blip_processor, blip_model, device
     
     try:
         print("Initializing models...")
@@ -63,14 +60,14 @@ def initialize_models():
         blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
         blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL).to(device)
         
-        # Initialize EasyOCR for text detection
-        print("Initializing EasyOCR...")
-        easyocr_reader = easyocr.Reader(['en'])
-
-        # Initialize TrOCR for handwritten text
-        print("Loading TrOCR model...")
-        trocr_processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
-        trocr_model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten').to(device)
+        # Check if pytesseract is available
+        print("Checking pytesseract...")
+        try:
+            pytesseract.get_tesseract_version()
+            print(f"Pytesseract version: {pytesseract.get_tesseract_version()}")
+        except Exception as e:
+            print(f"Warning: Pytesseract not found or not configured properly: {e}")
+            print("OCR functionality may not work. Install tesseract: brew install tesseract (macOS)")
         
         print("All models initialized successfully!")
         
@@ -127,46 +124,274 @@ def get_room_description(image):
         print(f"Error generating room description: {e}")
         return "Could not generate room description"
 
-def extract_text_with_trocr(image):
-    """Recognize handwritten text using TrOCR."""
-    try:
-        # Convert image to RGB
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
+def preprocess_image_for_ocr(image, method='adaptive'):
+    """Preprocess image to improve OCR accuracy with multiple methods."""
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    if method == 'adaptive':
+        # Adaptive thresholding - best for varying lighting
+        binary = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+    elif method == 'otsu':
+        # Otsu's thresholding - best for bimodal images
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    elif method == 'mean':
+        # Mean adaptive thresholding
+        binary = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+    else:
+        binary = gray
+    
+    # Denoise the image
+    denoised = cv2.fastNlMeansDenoising(binary, None, 10, 7, 21)
+    
+    # Apply slight dilation to make text more readable
+    kernel = np.ones((1, 1), np.uint8)
+    processed = cv2.dilate(denoised, kernel, iterations=1)
+    
+    return processed
 
-        # Process image and generate text
-        pixel_values = trocr_processor(images=pil_image, return_tensors="pt").pixel_values.to(device)
-        with torch.no_grad():
-            generated_ids = trocr_model.generate(pixel_values)
+def upscale_image(image, scale=2):
+    """Upscale image for better OCR on small text."""
+    height, width = image.shape[:2]
+    return cv2.resize(image, (width * scale, height * scale), interpolation=cv2.INTER_CUBIC)
+
+def sharpen_image(image):
+    """Sharpen image to enhance text edges."""
+    kernel = np.array([[-1,-1,-1],
+                       [-1, 9,-1],
+                       [-1,-1,-1]])
+    return cv2.filter2D(image, -1, kernel)
+
+def deskew_image(image):
+    """Deskew image to correct text angle."""
+    coords = np.column_stack(np.where(image > 0))
+    if len(coords) == 0:
+        return image
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    
+    # Only deskew if angle is significant
+    if abs(angle) > 0.5:
+        (h, w) = image.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        return rotated
+    return image
+
+def extract_text_fast(image):
+    """Fast OCR for real-time analysis - optimized for speed."""
+    try:
+        # Quick upscale
+        upscaled = upscale_image(image, scale=2)
         
-        generated_text = trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        return generated_text
+        # Single best method: Adaptive threshold
+        processed = preprocess_image_for_ocr(upscaled, method='adaptive')
+        pil_processed = Image.fromarray(processed)
+        
+        # Single OCR pass with PSM 3 (fastest general mode)
+        text = pytesseract.image_to_string(pil_processed, config='--psm 3 --oem 3')
+        
+        # Clean up
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        cleaned_text = '\n'.join(lines)
+        
+        return cleaned_text if cleaned_text else "No text detected"
+        
     except Exception as e:
-        print(f"Error in TrOCR text extraction: {e}")
+        print(f"Error in fast text extraction: {e}")
         return ""
 
-def detect_text(image):
-    """Detect text in the image using EasyOCR."""
+def extract_text_with_pytesseract(image):
+    """Extract text from image using Pytesseract OCR with advanced preprocessing."""
     try:
-        # Convert to RGB for better text detection
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = easyocr_reader.readtext(rgb_image)
+        results = []
+        
+        # Upscale image for better small text recognition
+        upscaled = upscale_image(image, scale=2)
+        
+        # 1. Original image (RGB)
+        rgb_image = cv2.cvtColor(upscaled, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+        text1 = pytesseract.image_to_string(pil_image, config='--psm 3 --oem 3')
+        results.append(text1)
+        
+        # 2. Sharpened image for better edge detection
+        sharpened = sharpen_image(upscaled)
+        rgb_sharp = cv2.cvtColor(sharpened, cv2.COLOR_BGR2RGB)
+        pil_sharp = Image.fromarray(rgb_sharp)
+        text2 = pytesseract.image_to_string(pil_sharp, config='--psm 3 --oem 3')
+        results.append(text2)
+        
+        # 3. Adaptive thresholding (best for varying lighting)
+        processed_adaptive = preprocess_image_for_ocr(upscaled, method='adaptive')
+        processed_adaptive = deskew_image(processed_adaptive)
+        pil_adaptive = Image.fromarray(processed_adaptive)
+        text3 = pytesseract.image_to_string(pil_adaptive, config='--psm 3 --oem 3')
+        results.append(text3)
+        
+        # 4. Otsu's thresholding (best for clear backgrounds)
+        processed_otsu = preprocess_image_for_ocr(upscaled, method='otsu')
+        pil_otsu = Image.fromarray(processed_otsu)
+        text4 = pytesseract.image_to_string(pil_otsu, config='--psm 3 --oem 3')
+        results.append(text4)
+        
+        # 5. Mean thresholding
+        processed_mean = preprocess_image_for_ocr(upscaled, method='mean')
+        pil_mean = Image.fromarray(processed_mean)
+        text5 = pytesseract.image_to_string(pil_mean, config='--psm 3 --oem 3')
+        results.append(text5)
+        
+        # 6. PSM 6: Single uniform block of text
+        text6 = pytesseract.image_to_string(pil_adaptive, config='--psm 6 --oem 3')
+        results.append(text6)
+        
+        # 7. PSM 11: Sparse text detection
+        text7 = pytesseract.image_to_string(pil_image, config='--psm 11 --oem 3')
+        results.append(text7)
+        
+        # 8. PSM 4: Single column of text
+        text8 = pytesseract.image_to_string(pil_adaptive, config='--psm 4 --oem 3')
+        results.append(text8)
+        
+        # Find the result with the most content
+        # Filter out very short results (likely noise)
+        valid_results = [r for r in results if len(r.strip()) > 3]
+        
+        if not valid_results:
+            return "No text detected"
+        
+        # Return the longest result (usually most complete)
+        combined_text = max(valid_results, key=len)
+        
+        # Clean up the text
+        lines = [line.strip() for line in combined_text.split('\n') if line.strip()]
+        cleaned_text = '\n'.join(lines)
+        
+        return cleaned_text if cleaned_text else "No text detected"
+        
+    except Exception as e:
+        print(f"Error in Pytesseract text extraction: {e}")
+        return ""
+
+def detect_text_fast(image):
+    """Fast text detection for real-time analysis."""
+    try:
+        # Moderate upscale for speed
+        upscaled = upscale_image(image, scale=2)
+        scale_factor = 2
+        
+        # Single best preprocessing method
+        processed = preprocess_image_for_ocr(upscaled, method='adaptive')
+        pil_processed = Image.fromarray(processed)
+        
+        # Single OCR pass
+        data = pytesseract.image_to_data(pil_processed, output_type=pytesseract.Output.DICT, config='--psm 3 --oem 3')
         
         text_blocks = []
-        for (bbox, text, prob) in results:
-            if prob > TEXT_DETECTION_CONFIDENCE:
-                text_blocks.append({
-                    'text': text,
-                    'confidence': float(prob),
-                    'bbox': [int(x) for point in bbox for x in point]  # Flatten bbox points
-                })
+        n_boxes = len(data['text'])
+        
+        for i in range(n_boxes):
+            if int(data['conf'][i]) > 0 and data['text'][i].strip():
+                confidence = int(data['conf'][i]) / 100.0
+                if confidence > TEXT_DETECTION_CONFIDENCE:
+                    x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                    
+                    # Scale back to original coordinates
+                    x, y, w, h = x // scale_factor, y // scale_factor, w // scale_factor, h // scale_factor
+                    
+                    bbox = [x, y, x+w, y, x+w, y+h, x, y+h]
+                    text_blocks.append({
+                        'text': data['text'][i],
+                        'confidence': float(confidence),
+                        'bbox': bbox
+                    })
+        
+        # Sort by position
+        text_blocks.sort(key=lambda b: (b['bbox'][1], b['bbox'][0]))
+        
+        return text_blocks
+    except Exception as e:
+        print(f"Error in fast text detection: {e}")
+        return []
+
+def detect_text(image):
+    """Detect text in the image using Pytesseract with bounding boxes."""
+    try:
+        # Upscale for better detection
+        upscaled = upscale_image(image, scale=2)
+        scale_factor = 2
+        
+        # Convert to RGB for better text detection
+        rgb_image = cv2.cvtColor(upscaled, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+        
+        # Try multiple preprocessing methods
+        processed_adaptive = preprocess_image_for_ocr(upscaled, method='adaptive')
+        processed_adaptive = deskew_image(processed_adaptive)
+        pil_adaptive = Image.fromarray(processed_adaptive)
+        
+        processed_otsu = preprocess_image_for_ocr(upscaled, method='otsu')
+        pil_otsu = Image.fromarray(processed_otsu)
+        
+        # Get detailed data including bounding boxes from multiple approaches
+        data1 = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT, config='--psm 3 --oem 3')
+        data2 = pytesseract.image_to_data(pil_adaptive, output_type=pytesseract.Output.DICT, config='--psm 3 --oem 3')
+        data3 = pytesseract.image_to_data(pil_otsu, output_type=pytesseract.Output.DICT, config='--psm 3 --oem 3')
+        
+        # Combine results from all approaches
+        text_blocks = []
+        seen_text_positions = {}
+        
+        for data in [data1, data2, data3]:
+            n_boxes = len(data['text'])
+            
+            for i in range(n_boxes):
+                # Filter out empty text and low confidence
+                if int(data['conf'][i]) > 0 and data['text'][i].strip():
+                    confidence = int(data['conf'][i]) / 100.0  # Convert to 0-1 range
+                    if confidence > TEXT_DETECTION_CONFIDENCE:
+                        x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                        
+                        # Scale back to original coordinates
+                        x, y, w, h = x // scale_factor, y // scale_factor, w // scale_factor, h // scale_factor
+                        
+                        # Use position and text as key to avoid duplicates but keep best confidence
+                        pos_key = (x // 5, y // 5, data['text'][i].strip())
+                        
+                        if pos_key not in seen_text_positions or confidence > seen_text_positions[pos_key]['confidence']:
+                            bbox = [x, y, x+w, y, x+w, y+h, x, y+h]
+                            seen_text_positions[pos_key] = {
+                                'text': data['text'][i],
+                                'confidence': float(confidence),
+                                'bbox': bbox
+                            }
+        
+        # Convert to list
+        text_blocks = list(seen_text_positions.values())
+        
+        # Sort by vertical position (top to bottom) then horizontal (left to right)
+        text_blocks.sort(key=lambda b: (b['bbox'][1], b['bbox'][0]))
+        
         return text_blocks
     except Exception as e:
         print(f"Error in text detection: {e}")
         return []
 
-def analyze_frame(frame):
-    """Analyze a single frame for objects, text, and generate room description."""
+def analyze_frame(frame, fast_mode=True):
+    """Analyze a single frame for objects, text, and generate room description.
+    
+    Args:
+        frame: Input frame to analyze
+        fast_mode: If True, use fast OCR (1-2s). If False, use comprehensive OCR (3-5s)
+    """
     global last_analysis
     
     try:
@@ -188,21 +413,24 @@ def analyze_frame(frame):
                     'bbox': [int(x) for x in det[['xmin', 'ymin', 'xmax', 'ymax']].values]
                 })
         
-        # 2. Text Detection (EasyOCR)
-        text_blocks = detect_text(frame)
-
-        # 3. Handwritten Text Recognition (TrOCR)
-        handwritten_text = extract_text_with_trocr(frame)
+        # 2. Text Detection and Extraction (Pytesseract)
+        # Use fast mode for real-time, comprehensive for uploads
+        if fast_mode:
+            text_blocks = detect_text_fast(frame)
+            full_text = extract_text_fast(frame)
+        else:
+            text_blocks = detect_text(frame)
+            full_text = extract_text_with_pytesseract(frame)
         
-        # 4. Generate Room Description
+        # 3. Generate Room Description
         room_description = get_room_description(pil_image)
         
-        # 5. Update last_analysis with all results
+        # 4. Update last_analysis with all results
         with analysis_lock:
             last_analysis = {
                 "objects": objects,
                 "text_blocks": text_blocks,
-                "handwritten_text": handwritten_text,
+                "full_text": full_text,
                 "room_description": room_description,
                 "caption": room_description,  # For backward compatibility
                 "timestamp": time.time()
@@ -366,7 +594,7 @@ def analysis_data():
                 "room_description": current_analysis.get('room_description', 'Analyzing...'),
                 "caption_confidence": current_analysis.get('caption_confidence', 0.0),
                 "text_blocks": current_analysis.get('text_blocks', []),
-                "handwritten_text": current_analysis.get('handwritten_text', ''),
+                "full_text": current_analysis.get('full_text', ''),
                 "timestamp": current_analysis.get('timestamp', time.time())
             }
             return jsonify(response)
@@ -406,8 +634,8 @@ def analyze_media():
                 if img is None:
                     return jsonify({'error': 'Could not read image'}), 400
                 
-                # Analyze the image
-                analysis = analyze_frame(img)
+                # Analyze the image with comprehensive mode (not real-time)
+                analysis = analyze_frame(img, fast_mode=False)
                 
                 # Save annotated image
                 annotated_img = img.copy()
@@ -445,7 +673,7 @@ def analyze_media():
                         'room_description': analysis.get('room_description', 'No description available'),
                         'text_blocks': [{'text': tb['text'], 'confidence': tb['confidence']} 
                                       for tb in analysis.get('text_blocks', [])],
-                        'handwritten_text': analysis.get('handwritten_text', '')
+                        'full_text': analysis.get('full_text', '')
                     }
                 }
                 
@@ -465,7 +693,7 @@ if __name__ == "__main__":
     
     # Run the app
     try:
-        app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
+        app.run(host='0.0.0.0', port=5005, debug=True, threaded=True)
     finally:
         # Cleanup
         if 'video_capture' in globals() and video_capture is not None:

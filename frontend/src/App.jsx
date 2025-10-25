@@ -259,20 +259,41 @@ export default function App() {
     }
   };
 
-  const toggleRealtimeAnalysis = () => {
+  const toggleRealtimeAnalysis = async () => {
+    if (!realtimeAnalysis) {
+      // Check if vision encoder is initialized before starting
+      if (!visionStatus || !visionStatus.models_loaded) {
+        alert('Initializing Vision Encoder... Please wait.');
+        await initializeVisionEncoder();
+        // Fetch updated status after initialization
+        await fetchVisionStatus();
+      }
+      // Only toggle if initialization was successful or already initialized
+      const statusCheck = await fetch(`${API_BASE_URL}/api/vision/status`);
+      const statusData = await statusCheck.json();
+      if (!statusData.models_loaded) {
+        alert('Vision Encoder initialization failed. Please try again.');
+        return;
+      }
+    }
     setRealtimeAnalysis(!realtimeAnalysis);
   };
 
   // Effect to handle real-time analysis
   useEffect(() => {
+    console.log('Real-time analysis effect triggered:', { realtimeAnalysis, cameraActive });
+    
     if (realtimeAnalysis && cameraActive) {
+      console.log('Starting real-time analysis interval...');
       // Start continuous analysis
       analysisIntervalRef.current = setInterval(() => {
+        console.log('Capturing and analyzing frame...');
         captureAndAnalyzeRealtime();
-      }, 1000); // Analyze every 1 second
+      }, 2000); // Analyze every 2 seconds (increased from 1s for better performance)
     } else {
       // Stop continuous analysis
       if (analysisIntervalRef.current) {
+        console.log('Stopping real-time analysis interval');
         clearInterval(analysisIntervalRef.current);
         analysisIntervalRef.current = null;
       }
@@ -330,7 +351,16 @@ export default function App() {
   };
 
   const captureAndAnalyzeRealtime = async () => {
-    if (!videoRef.current || !canvasRef.current || loading) return;
+    if (!videoRef.current || !canvasRef.current) {
+      console.log('Video or canvas ref not available');
+      return;
+    }
+    
+    // Check if video is ready
+    if (videoRef.current.readyState !== videoRef.current.HAVE_ENOUGH_DATA) {
+      console.log('Video not ready yet');
+      return;
+    }
     
     try {
       const canvas = canvasRef.current;
@@ -340,15 +370,27 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0);
       
-      const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1]; // Lower quality for speed
+      const base64Image = canvas.toDataURL('image/jpeg', 0.7).split(',')[1]; // Lower quality for speed
       
+      console.log('Sending frame for analysis...');
       const response = await fetch(`${API_BASE_URL}/api/vision/analyze-frame`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_base64: base64Image })
       });
       
+      console.log('Analysis response status:', response.status);
+      
+      // Handle 503 Service Unavailable (Vision Encoder not initialized)
+      if (response.status === 503) {
+        console.warn('Vision Encoder not initialized, stopping real-time analysis');
+        setRealtimeAnalysis(false);
+        alert('Vision Encoder is not initialized. Please initialize it first.');
+        return;
+      }
+      
       const data = await response.json();
+      console.log('Analysis result:', data);
       if (data.status === 'success') {
         setAnalysisResult(data.analysis);
       }

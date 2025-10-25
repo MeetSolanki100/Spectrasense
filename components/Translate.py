@@ -1,19 +1,9 @@
-import asyncio
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from indicnlp.transliterate.unicode_transliterate import UnicodeIndicTransliterator
 
 class Translate:
     def __init__(self):
-        self.translator = Translator()
-
-    async def _translate_async(self, text, target_lang_code):
-        """Asynchronous translation helper method"""
-        try:
-            translation = await self.translator.translate(text, dest=target_lang_code)
-            return translation.text
-        except Exception as e:
-            print(f"Translation error: {str(e)}")
-            return text
+        self.translator = GoogleTranslator(source='en')
 
     def translate_and_transliterate(self, text, target_lang_code):
         """
@@ -27,20 +17,20 @@ class Translate:
             str: Transliterated text in English script.
         """
         try:
-            # Create new event loop for this translation
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Run translation in event loop
-            translated_text = loop.run_until_complete(self._translate_async(text, target_lang_code))
-            loop.close()
+            # Translate using deep-translator
+            self.translator.target = target_lang_code
+            translated_text = self.translator.translate(text)
             
             # Transliterate to English script using indic_nlp
-            if translated_text != text:  # Only transliterate if translation succeeded
-                transliterated_text = UnicodeIndicTransliterator.transliterate(
-                    translated_text, target_lang_code, 'en'
-                )
-                return transliterated_text
+            if translated_text and translated_text != text:  # Only transliterate if translation succeeded
+                try:
+                    transliterated_text = UnicodeIndicTransliterator.transliterate(
+                        translated_text, target_lang_code, 'en'
+                    )
+                    return transliterated_text
+                except:
+                    # If transliteration fails, return translated text
+                    return translated_text
             return text
             
         except Exception as e:

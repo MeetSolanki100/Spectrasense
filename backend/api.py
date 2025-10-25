@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -7,6 +8,10 @@ import asyncio
 import json
 import sys
 import os
+import cv2
+import numpy as np
+from io import BytesIO
+import base64
 
 # Add parent directory to path to import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,30 +20,25 @@ from components.SpeechChatbot import SpeechChatbot
 from components.VectorDB import RAGChatbot
 from components.TextToSpeech import TextToSpeech
 from components.Translate import Translate
+from components.VisionEncoder import VisionEncoder
 
 # Global instances
 chatbot_instance = None
 vector_db = RAGChatbot()
 tts = TextToSpeech()
 translator = Translate()
+vision_encoder = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    global chatbot_instance
-    try:
-        chatbot_instance = SpeechChatbot(
-            whisper_model="base",
-            llm_model="llama3.1:8b",
-            glasses_device=None
-        )
-        print("✅ Chatbot initialized successfully")
-    except Exception as e:
-        print(f"❌ Error initializing chatbot: {e}")
+    # Startup - Don't initialize heavy models at startup (lazy loading)
+    global chatbot_instance, vision_encoder
+    print("🚀 Server starting with lazy loading enabled...")
+    print("⏳ Models will be initialized on first use")
     
     yield
     
-    # Shutdown (if needed)
+    # Shutdown
     print("Shutting down...")
 
 app = FastAPI(title="Voice Assistant API", lifespan=lifespan)
@@ -46,7 +46,14 @@ app = FastAPI(title="Voice Assistant API", lifespan=lifespan)
 # CORS configuration - MUST BE RIGHT AFTER app creation
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://localhost:5173", 
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -93,6 +100,23 @@ async def health_check():
         "vector_db_count": vector_db.collection.count()
     }
 
+def get_chatbot():
+    """Lazy load chatbot on first use"""
+    global chatbot_instance
+    if chatbot_instance is None:
+        try:
+            print("🔧 Initializing chatbot...")
+            chatbot_instance = SpeechChatbot(
+                whisper_model="base",
+                llm_model="llama3.1:8b",
+                glasses_device=None
+            )
+            print("✅ Chatbot initialized successfully")
+        except Exception as e:
+            print(f"❌ Error initializing chatbot: {e}")
+            raise HTTPException(status_code=503, detail=f"Chatbot initialization failed: {str(e)}")
+    return chatbot_instance
+
 @app.post("/api/initialize")
 async def initialize_chatbot(config: ChatbotConfig):
     """Initialize or reconfigure the chatbot"""
@@ -114,12 +138,12 @@ async def initialize_chatbot(config: ChatbotConfig):
 @app.post("/api/chat")
 async def chat(request: MessageRequest):
     """Process text message and get response"""
-    if not chatbot_instance:
-        raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
     try:
+        # Lazy load chatbot
+        bot = get_chatbot()
+        
         # Process conversation
-        response = chatbot_instance.process_conversation(request.message)
+        response = bot.process_conversation(request.message)
         
         # Translate if requested
         final_response = response
@@ -159,13 +183,14 @@ async def chat(request: MessageRequest):
 @app.post("/api/voice/start")
 async def start_voice_session():
     """Start voice interaction session"""
-    if not chatbot_instance:
-        raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
-    return {
-        "status": "success",
-        "message": "Voice session ready. Use WebSocket at /ws/voice for real-time interaction"
-    }
+    try:
+        get_chatbot()  # Ensure chatbot is initialized
+        return {
+            "status": "success",
+            "message": "Voice session ready. Use WebSocket at /ws/voice for real-time interaction"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 @app.websocket("/ws/voice")
 async def voice_websocket(websocket: WebSocket):
@@ -363,6 +388,112 @@ async def get_stats():
                 "collection_name": "conversations"
             }
         }
+
+@app.post("/api/vision/initialize")
+async def initialize_vision_encoder():
+    """Initialize the vision encoder models"""
+    global vision_encoder
+    try:
+        if vision_encoder is None:
+            vision_encoder = VisionEncoder()
+        
+        vision_encoder.initialize_models()
+        
+        return {
+            "status": "success",
+            "message": "Vision Encoder initialized successfully",
+            "device": vision_encoder.device
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vision Encoder initialization failed: {str(e)}")
+
+@app.post("/api/vision/analyze")
+async def analyze_image(file: UploadFile = File(...)):
+    """Analyze an uploaded image for objects, text, and scene description"""
+    if not vision_encoder:
+        raise HTTPException(status_code=503, detail="Vision Encoder not initialized")
+    
+    try:
+        # Read the uploaded file
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Could not read image")
+        
+        # Analyze the image
+        analysis = vision_encoder.analyze_image(image)
+        
+        # Annotate the image
+        annotated_image = vision_encoder.annotate_image(image, analysis)
+        
+        # Convert images to base64
+        original_base64 = vision_encoder.image_to_base64(image)
+        annotated_base64 = vision_encoder.image_to_base64(annotated_image)
+        
+        return {
+            "status": "success",
+            "analysis": {
+                "objects": [{"class": obj["class"], "confidence": obj["confidence"]} 
+                           for obj in analysis.get("objects", [])],
+                "text_blocks": [{"text": tb["text"], "confidence": tb["confidence"]} 
+                               for tb in analysis.get("text_blocks", [])],
+                "handwritten_text": analysis.get("handwritten_text", ""),
+                "room_description": analysis.get("room_description", "No description available")
+            },
+            "images": {
+                "original": original_base64,
+                "annotated": annotated_base64
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image analysis failed: {str(e)}")
+
+@app.get("/api/vision/status")
+async def get_vision_status():
+    """Get the status of the vision encoder"""
+    return {
+        "status": "success",
+        "vision_encoder_initialized": vision_encoder is not None,
+        "models_loaded": vision_encoder.initialized if vision_encoder else False,
+        "device": vision_encoder.device if vision_encoder else "N/A"
+    }
+
+class AnalyzeFrameRequest(BaseModel):
+    image_base64: str
+
+@app.post("/api/vision/analyze-frame")
+async def analyze_frame(request: AnalyzeFrameRequest):
+    """Analyze a frame from webcam (base64 encoded)"""
+    if not vision_encoder:
+        raise HTTPException(status_code=503, detail="Vision Encoder not initialized")
+    
+    try:
+        # Decode base64 image
+        image = vision_encoder.base64_to_image(request.image_base64)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Could not decode image")
+        
+        # Analyze the image
+        analysis = vision_encoder.analyze_image(image)
+        
+        return {
+            "status": "success",
+            "analysis": {
+                "objects": [obj["class"] for obj in analysis.get("objects", [])],
+                "text_blocks": [tb["text"] for tb in analysis.get("text_blocks", [])],
+                "handwritten_text": analysis.get("handwritten_text", ""),
+                "room_description": analysis.get("room_description", "Analyzing...")
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Frame analysis failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,30 +1,17 @@
-# Core package versions (compatible with both desktop and Jetson Nano)
+# Core package versions
 ultralytics>=8.0.0
 pytesseract>=0.3.10
-torch>=1.10.0
-torchvision>=0.11.0
-transformers>=4.36.0,<5.0.0
-Pillow>=8.3.0
-opencv-python-headless>=4.5.0
-accelerate>=0.12.0,<1.0.0
-tiktoken>=0.3.0,<1.0.0
-einops>=0.4.0,<1.0.0
-Flask>=2.0.0,<3.0.0
-requests>=2.25.0,<3.0.0
-sentencepiece>=0.1.96,<1.0.0
-optimum>=1.8.0,<2.0.0
-numpy>=1.21.0,<2.0.0
-scikit-image>=0.19.0,<1.0.0
-angle-emb>=0.3.0,<1.0.0
-timm>=0.9.0,<1.0.0
+Pillow>=10.0.0
+opencv-python>=4.5.0
+numpy>=1.21.0
+scikit-image>=0.19.0
 seaborn
-# Jetson-specific packages (only install on Jetson devices)
-# jetson-stats  # Uncomment and install manually on Jetson: pip install jetson-stats
-# pynvml       # Uncomment and install manually on Jetson: pip install pynvml
-
-# CUDA compatibility notes:
-# - For Jetson with CUDA 12.x (JetPack 6.x): PyTorch 2.x will be installed via setup scripts
-# - For Jetson with CUDA 11.x (JetPack 5.x): PyTorch 1.12.x will be installed via setup scripts  
-# - For Jetson with CUDA 10.2 (JetPack 4.6): PyTorch 1.10.x will be installed via setup scripts
-# - For desktop: PyTorch will use default installation (CPU/MPS/CUDA)
-# - Minimum PyTorch 1.10.0 supports CUDA 10.2+ and all newer versions
+tqdm
+requests
+transformers>=4.32.0
+torch>=2.0.0
+torchvision
+sentencepiece
+tiktoken
+accelerate
+bitsandbytes

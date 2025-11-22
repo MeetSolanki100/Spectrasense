@@ -1,0 +1,19 @@
+# SpectraSense Server Requirements (Linux)
+# Install system packages first, then Python packages
+
+# System Packages (install with apt/dnf/pacman):
+# - bluez (Bluetooth stack)
+# - pulseaudio (Audio routing)
+# - pulseaudio-module-bluetooth (Bluetooth audio support)
+# - python3 (Python 3.7+)
+# - python3-gi (GObject introspection - for advanced features)
+
+# Python Packages (pip install):
+# None required for basic audio functionality!
+
+# Optional Python packages for enhanced features:
+# pygobject>=3.40.0  # For D-Bus integration (install via system package manager instead)
+
+# Note: DO NOT use pybluez or dbus-python
+# They cause issues on modern Linux systems
+# We use native BlueZ tools instead: bluetoothctl, pactl, etc.

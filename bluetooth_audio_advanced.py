@@ -3,12 +3,8 @@
 Advanced Bluetooth Audio Server with Phone Call Support
 Handles A2DP audio + HFP phone calls + AVRCP controls
 
-Uses GObject/GLib for proper D-Bus integration with BlueZ
+Uses native Linux tools (bluetoothctl, pactl) instead of Python bindings
 """
-
-import gi
-gi.require_version('GLib', '2.0')
-from gi.repository import GLib
 
 import subprocess
 import sys

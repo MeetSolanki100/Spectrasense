@@ -206,11 +206,24 @@ AutoEnable = true
                                capture_output=True, text=True)
         print(result.stdout if result.stdout else "  None found")
         
-        # Show all cards
+        # Show all cards with profiles
         print("\n📊 Available Audio Cards:")
-        result = subprocess.run(['pactl', 'list', 'cards', 'short'], 
+        result = subprocess.run(['pactl', 'list', 'cards'], 
                                capture_output=True, text=True)
-        print(result.stdout if result.stdout else "  None found")
+        if result.stdout:
+            # Parse and show Bluetooth cards with their profiles
+            in_bluez_card = False
+            for line in result.stdout.split('\n'):
+                if 'bluez_card' in line.lower():
+                    in_bluez_card = True
+                    print(f"\n  {line}")
+                elif in_bluez_card:
+                    if line.strip().startswith('Profiles:') or 'profile' in line.lower():
+                        print(f"  {line}")
+                    elif line.strip() == '' or line.startswith('Card'):
+                        in_bluez_card = False
+        else:
+            print("  None found")
         
         # Show loaded modules
         print("\n📊 Loaded PulseAudio Modules:")
@@ -253,16 +266,40 @@ AutoEnable = true
                             mac = parts[1]
                             connected_device = mac
                             print(f"📱 Device connected: {mac}")
-                            print("Setting audio profile to A2DP Sink...")
+                            print("Setting audio profiles for MEDIA + PHONE audio...")
                             
                             # Wait for device to be fully registered
-                            time.sleep(2)
+                            time.sleep(3)
                             
-                            # Try to set profile to a2dp_sink
-                            subprocess.run(
-                                ['pactl', 'set-card-profile', f'bluez_card.{mac.replace(":", "_")}', 'a2dp_sink'],
-                                capture_output=True
-                            )
+                            # Try multiple profile variations for maximum compatibility
+                            profiles_to_try = [
+                                'a2dp_sink',           # High-quality media audio
+                                'a2dp-sink',           # Alternative naming
+                                'headset_head_unit',   # Phone calls + media
+                                'a2dp_sink_sbc',       # Media with SBC codec
+                            ]
+                            
+                            card_name = f'bluez_card.{mac.replace(":", "_")}'
+                            
+                            for profile in profiles_to_try:
+                                result = subprocess.run(
+                                    ['pactl', 'set-card-profile', card_name, profile],
+                                    capture_output=True,
+                                    text=True
+                                )
+                                if result.returncode == 0:
+                                    print(f"✅ Set profile to: {profile}")
+                                    break
+                                else:
+                                    print(f"⚠️  Profile {profile} not available")
+                            
+                            # Ensure the sink is not muted and volume is up
+                            print("Unmuting and setting volume...")
+                            subprocess.run(['pactl', 'set-sink-mute', f'bluez_sink.{mac.replace(":", "_")}', '0'], 
+                                         capture_output=True)
+                            subprocess.run(['pactl', 'set-sink-volume', f'bluez_sink.{mac.replace(":", "_")}', '100%'], 
+                                         capture_output=True)
+                            
                             time.sleep(1)
                             break
             elif not connected:
@@ -325,11 +362,18 @@ AutoEnable = true
                     print("   - Notifications")
                 elif connected and not audio_active:
                     print("⚠️  Phone connected but audio not active yet.")
-                    print("   On your phone:")
-                    print("   1. Go to Bluetooth settings")
-                    print("   2. Tap the gear icon next to 'SpectraSense Audio'")
-                    print("   3. Make sure 'Media audio' is enabled")
-                    print("   4. Try playing music on phone")
+                    print("")
+                    print("📱 On your Android phone:")
+                    print("   1. Go to Settings → Bluetooth")
+                    print("   2. Tap the ⚙️ gear icon next to 'SpectraSense Audio'")
+                    print("   3. Make sure these are ENABLED:")
+                    print("      ✓ Phone calls")
+                    print("      ✓ Media audio  ← IMPORTANT for music!")
+                    print("   4. Go back and play music (Spotify, YouTube, etc.)")
+                    print("")
+                    print("💡 TIP: Some phones require you to manually select")
+                    print("   'SpectraSense Audio' as the audio output device")
+                    print("   in the media player or quick settings panel.")
                 
                 last_status = status
             

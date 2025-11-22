@@ -124,33 +124,45 @@ AutoEnable = true
         """Load required PulseAudio modules for Bluetooth"""
         print("🔊 Setting up PulseAudio for Bluetooth...\n")
         
-        # Ensure PulseAudio is running
-        subprocess.run(['pulseaudio', '--check'], check=False)
-        if subprocess.run(['pulseaudio', '--check']).returncode != 0:
-            print("Starting PulseAudio...")
-            subprocess.run(['pulseaudio', '--start'], check=False)
-            time.sleep(2)
+        # Kill any existing PulseAudio instance and restart fresh
+        print("Restarting PulseAudio...")
+        subprocess.run(['pulseaudio', '-k'], check=False)
+        time.sleep(1)
+        subprocess.run(['pulseaudio', '--start'], check=False)
+        time.sleep(2)
         
-        # Load Bluetooth modules
+        # Unload any existing Bluetooth modules first
+        print("Unloading old Bluetooth modules...")
+        subprocess.run(['pactl', 'unload-module', 'module-bluetooth-discover'], 
+                      capture_output=True, check=False)
+        subprocess.run(['pactl', 'unload-module', 'module-bluetooth-policy'], 
+                      capture_output=True, check=False)
+        time.sleep(1)
+        
+        # Load Bluetooth modules in correct order
         modules = [
             'module-bluetooth-discover',  # Auto-discover Bluetooth devices
             'module-bluetooth-policy',     # Automatic profile switching
             'module-switch-on-connect',    # Auto-switch audio to BT when connected
+            'module-loopback',             # For audio loopback if needed
         ]
         
         for module in modules:
-            # Check if already loaded
+            print(f"Loading {module}...")
             result = subprocess.run(
-                ['pactl', 'list', 'modules', 'short'],
+                ['pactl', 'load-module', module],
                 capture_output=True,
                 text=True
             )
-            
-            if module not in result.stdout:
-                print(f"Loading {module}...")
-                subprocess.run(['pactl', 'load-module', module], check=False)
+            if result.returncode == 0:
+                print(f"✅ {module} loaded")
             else:
-                print(f"✅ {module} already loaded")
+                print(f"⚠️  {module} already loaded or not available")
+            time.sleep(0.5)
+        
+        # Set default sink to auto-select
+        print("Configuring default audio sink...")
+        subprocess.run(['pactl', 'set-default-sink', '@DEFAULT_SINK@'], check=False)
         
         print("\n✅ PulseAudio configured\n")
     
@@ -176,6 +188,40 @@ AutoEnable = true
         
         print(f"✅ Server is discoverable as: {self.device_name}\n")
     
+    def show_audio_debug_info(self):
+        """Show detailed audio configuration for debugging"""
+        print("\n" + "=" * 60)
+        print("🔍 Audio Debug Information")
+        print("=" * 60 + "\n")
+        
+        # Show all sinks
+        print("📊 Available Audio Sinks:")
+        result = subprocess.run(['pactl', 'list', 'sinks', 'short'], 
+                               capture_output=True, text=True)
+        print(result.stdout if result.stdout else "  None found")
+        
+        # Show all sources
+        print("\n📊 Available Audio Sources:")
+        result = subprocess.run(['pactl', 'list', 'sources', 'short'], 
+                               capture_output=True, text=True)
+        print(result.stdout if result.stdout else "  None found")
+        
+        # Show all cards
+        print("\n📊 Available Audio Cards:")
+        result = subprocess.run(['pactl', 'list', 'cards', 'short'], 
+                               capture_output=True, text=True)
+        print(result.stdout if result.stdout else "  None found")
+        
+        # Show loaded modules
+        print("\n📊 Loaded PulseAudio Modules:")
+        result = subprocess.run(['pactl', 'list', 'modules', 'short'], 
+                               capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'bluetooth' in line.lower() or 'loopback' in line.lower():
+                print(f"  {line}")
+        
+        print("\n" + "=" * 60 + "\n")
+    
     def monitor_bluetooth_connections(self):
         """Monitor Bluetooth connections and audio status"""
         print("👂 Monitoring Bluetooth connections...\n")
@@ -184,6 +230,7 @@ AutoEnable = true
         print("=" * 60 + "\n")
         
         last_status = None
+        connected_device = None
         
         while self.is_running:
             # Check connected devices
@@ -195,6 +242,32 @@ AutoEnable = true
             
             connected = 'Device' in result.stdout
             
+            # If device just connected, set audio profile
+            if connected and not connected_device:
+                # Extract device MAC address
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    if 'Device' in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mac = parts[1]
+                            connected_device = mac
+                            print(f"📱 Device connected: {mac}")
+                            print("Setting audio profile to A2DP Sink...")
+                            
+                            # Wait for device to be fully registered
+                            time.sleep(2)
+                            
+                            # Try to set profile to a2dp_sink
+                            subprocess.run(
+                                ['pactl', 'set-card-profile', f'bluez_card.{mac.replace(":", "_")}', 'a2dp_sink'],
+                                capture_output=True
+                            )
+                            time.sleep(1)
+                            break
+            elif not connected:
+                connected_device = None
+            
             # Check audio sinks
             result = subprocess.run(
                 ['pactl', 'list', 'sinks', 'short'],
@@ -204,11 +277,37 @@ AutoEnable = true
             
             audio_active = 'bluez' in result.stdout.lower()
             
+            # If connected but no audio, try to activate sink
+            if connected and not audio_active and connected_device:
+                print("🔧 Attempting to activate Bluetooth audio sink...")
+                
+                # List all cards
+                cards_result = subprocess.run(
+                    ['pactl', 'list', 'cards', 'short'],
+                    capture_output=True,
+                    text=True
+                )
+                
+                print(f"Available cards:\n{cards_result.stdout}")
+                
+                # Try to find and activate the Bluetooth card
+                for line in cards_result.stdout.split('\n'):
+                    if 'bluez' in line.lower():
+                        card_name = line.split()[0] if line.split() else None
+                        if card_name:
+                            print(f"Found Bluetooth card: {card_name}")
+                            # Set to a2dp_sink profile
+                            subprocess.run(
+                                ['pactl', 'set-card-profile', card_name, 'a2dp_sink'],
+                                capture_output=True
+                            )
+                            time.sleep(1)
+            
             # Generate status
             if connected and audio_active:
                 status = "🔊 AUDIO PLAYING"
             elif connected:
-                status = "📱 PHONE CONNECTED"
+                status = "📱 PHONE CONNECTED (waiting for audio...)"
             else:
                 status = "⏳ WAITING FOR CONNECTION"
             
@@ -224,6 +323,13 @@ AutoEnable = true
                     print("   - Music/Videos")
                     print("   - Phone calls")
                     print("   - Notifications")
+                elif connected and not audio_active:
+                    print("⚠️  Phone connected but audio not active yet.")
+                    print("   On your phone:")
+                    print("   1. Go to Bluetooth settings")
+                    print("   2. Tap the gear icon next to 'SpectraSense Audio'")
+                    print("   3. Make sure 'Media audio' is enabled")
+                    print("   4. Try playing music on phone")
                 
                 last_status = status
             
@@ -243,6 +349,9 @@ AutoEnable = true
             self.configure_bluetooth_audio_sink()
             self.setup_pulseaudio_modules()
             self.make_discoverable()
+            
+            # Show debug info
+            self.show_audio_debug_info()
             
             print("\n" + "=" * 60)
             print("✅ SERVER IS READY!")

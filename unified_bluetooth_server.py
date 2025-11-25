@@ -24,6 +24,13 @@ import sys
 import subprocess
 import select
 
+# Try to import Bluetooth constants
+try:
+    socket.BDADDR_ANY
+except AttributeError:
+    # If not available, define it
+    socket.BDADDR_ANY = ""
+
 # Protocol Constants
 TYPE_TEXT = 1
 TYPE_COMMAND = 2
@@ -232,6 +239,46 @@ class UnifiedBluetoothServer:
             except Exception as e:
                 print(f"Input error: {e}")
     
+    def get_bluetooth_address(self):
+        """Get the local Bluetooth adapter address"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['hciconfig'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Parse output to find BD Address
+            for line in result.stdout.split('\n'):
+                if 'BD Address:' in line:
+                    # Extract address like "BD Address: XX:XX:XX:XX:XX:XX"
+                    addr = line.split('BD Address:')[1].strip().split()[0]
+                    return addr
+            
+            # If hciconfig doesn't work, try alternative method
+            result = subprocess.run(
+                ['bluetoothctl', 'list'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Parse output like "Controller XX:XX:XX:XX:XX:XX"
+            for line in result.stdout.split('\n'):
+                if 'Controller' in line:
+                    addr = line.split()[1]
+                    return addr
+            
+            # Last resort: use any available adapter
+            return socket.BDADDR_ANY
+            
+        except Exception as e:
+            print(f"⚠️  Could not detect Bluetooth address: {e}")
+            # Return special value that means "any adapter"
+            return socket.BDADDR_ANY
+    
     def start(self):
         """Start the unified server"""
         print("=" * 60)
@@ -243,6 +290,10 @@ class UnifiedBluetoothServer:
         self.setup_audio_server()
         
         try:
+            # Get local Bluetooth address
+            bt_address = self.get_bluetooth_address()
+            print(f"\n🔍 Using Bluetooth adapter: {bt_address if bt_address != socket.BDADDR_ANY else 'ANY'}")
+            
             # Create RFCOMM socket
             self.server_socket = socket.socket(
                 socket.AF_BLUETOOTH,
@@ -252,8 +303,9 @@ class UnifiedBluetoothServer:
             
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            # Bind to any address, channel 4
-            self.server_socket.bind(("", RFCOMM_CHANNEL))
+            # Bind to Bluetooth address and channel 4
+            # Use BDADDR_ANY (empty string equivalent) to bind to any available adapter
+            self.server_socket.bind((bt_address, RFCOMM_CHANNEL))
             self.server_socket.listen(1)
             
             print(f"\n✅ Server bound to RFCOMM channel {RFCOMM_CHANNEL}")

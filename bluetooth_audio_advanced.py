@@ -21,6 +21,7 @@ class AdvancedBluetoothAudioServer:
         self.is_running = False
         self.audio_connected = False
         self.in_call = False
+        self.loopback_modules = []  # Track loopback modules to remove
         
     def check_system(self):
         """Check if system is properly configured"""
@@ -131,20 +132,29 @@ AutoEnable = true
         subprocess.run(['pulseaudio', '--start'], check=False)
         time.sleep(2)
         
-        # Unload any existing Bluetooth modules first
-        print("Unloading old Bluetooth modules...")
+        # Unload any existing loopback modules that might cause feedback
+        print("Removing any loopback modules...")
+        result = subprocess.run(['pactl', 'list', 'modules', 'short'], 
+                               capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'module-loopback' in line:
+                module_id = line.split()[0]
+                print(f"Unloading loopback module {module_id}")
+                subprocess.run(['pactl', 'unload-module', module_id], check=False)
+        
+        # Unload and reload Bluetooth modules
+        print("Reloading Bluetooth modules...")
         subprocess.run(['pactl', 'unload-module', 'module-bluetooth-discover'], 
                       capture_output=True, check=False)
         subprocess.run(['pactl', 'unload-module', 'module-bluetooth-policy'], 
                       capture_output=True, check=False)
         time.sleep(1)
         
-        # Load Bluetooth modules in correct order
+        # Load Bluetooth modules in correct order (NO loopback module!)
         modules = [
             'module-bluetooth-discover',  # Auto-discover Bluetooth devices
             'module-bluetooth-policy',     # Automatic profile switching
             'module-switch-on-connect',    # Auto-switch audio to BT when connected
-            'module-loopback',             # For audio loopback if needed
         ]
         
         for module in modules:
@@ -160,11 +170,29 @@ AutoEnable = true
                 print(f"⚠️  {module} already loaded or not available")
             time.sleep(0.5)
         
-        # Set default sink to auto-select
-        print("Configuring default audio sink...")
-        subprocess.run(['pactl', 'set-default-sink', '@DEFAULT_SINK@'], check=False)
+        print("\n✅ PulseAudio configured (loopback disabled)\n")
         
-        print("\n✅ PulseAudio configured\n")
+        # Mute all microphone monitors to prevent feedback
+        self.disable_microphone_monitoring()
+    
+    def disable_microphone_monitoring(self):
+        """Disable microphone monitoring to prevent hearing yourself"""
+        print("🔇 Disabling microphone monitoring...")
+        
+        # Get all sources (microphones)
+        result = subprocess.run(['pactl', 'list', 'sources', 'short'],
+                               capture_output=True, text=True)
+        
+        for line in result.stdout.split('\n'):
+            if line.strip() and 'monitor' not in line.lower():
+                source_id = line.split()[0] if line.split() else None
+                if source_id:
+                    # Mute the source to prevent feedback
+                    subprocess.run(['pactl', 'set-source-mute', source_id, '1'],
+                                  capture_output=True)
+                    print(f"  Muted source: {source_id}")
+        
+        print("✅ Microphone monitoring disabled\n")
     
     def make_discoverable(self):
         """Make server discoverable as Bluetooth audio device"""
@@ -194,14 +222,23 @@ AutoEnable = true
         print("🔍 Audio Debug Information")
         print("=" * 60 + "\n")
         
+        # Show default sink and source
+        print("📊 Default Audio Devices:")
+        result = subprocess.run(['pactl', 'info'], 
+                               capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'Default Sink:' in line or 'Default Source:' in line:
+                print(f"  {line.strip()}")
+        print()
+        
         # Show all sinks
-        print("📊 Available Audio Sinks:")
+        print("📊 Available Audio Sinks (Outputs):")
         result = subprocess.run(['pactl', 'list', 'sinks', 'short'], 
                                capture_output=True, text=True)
         print(result.stdout if result.stdout else "  None found")
         
         # Show all sources
-        print("\n📊 Available Audio Sources:")
+        print("\n📊 Available Audio Sources (Inputs):")
         result = subprocess.run(['pactl', 'list', 'sources', 'short'], 
                                capture_output=True, text=True)
         print(result.stdout if result.stdout else "  None found")
@@ -219,6 +256,10 @@ AutoEnable = true
         for line in result.stdout.split('\n'):
             if 'bluetooth' in line.lower() or 'loopback' in line.lower():
                 print(f"  {line}")
+        
+        # Check for loopback that might cause feedback
+        if 'loopback' in result.stdout.lower():
+            print("\n⚠️  WARNING: Loopback module detected - this may cause audio feedback!")
         
         print("\n" + "=" * 60 + "\n")
     
@@ -253,17 +294,63 @@ AutoEnable = true
                             mac = parts[1]
                             connected_device = mac
                             print(f"📱 Device connected: {mac}")
-                            print("Setting audio profile to A2DP Sink...")
+                            print("Configuring audio routing...")
                             
                             # Wait for device to be fully registered
+                            time.sleep(3)
+                            
+                            # Get card name
+                            card_name = f'bluez_card.{mac.replace(":", "_")}'
+                            
+                            # List available profiles
+                            print(f"Checking available profiles for {card_name}...")
+                            profiles_result = subprocess.run(
+                                ['pactl', 'list', 'cards'],
+                                capture_output=True,
+                                text=True
+                            )
+                            
+                            # Try a2dp_sink first (high quality audio from phone)
+                            print("Setting profile to a2dp_sink...")
+                            result = subprocess.run(
+                                ['pactl', 'set-card-profile', card_name, 'a2dp_sink'],
+                                capture_output=True,
+                                text=True
+                            )
+                            
+                            if result.returncode != 0:
+                                # Try alternative profile names
+                                print("Trying alternative profile: a2dp-sink...")
+                                subprocess.run(
+                                    ['pactl', 'set-card-profile', card_name, 'a2dp-sink'],
+                                    capture_output=True
+                                )
+                            
                             time.sleep(2)
                             
-                            # Try to set profile to a2dp_sink
+                            # Find the Bluetooth sink and set it as default
+                            sinks_result = subprocess.run(
+                                ['pactl', 'list', 'sinks', 'short'],
+                                capture_output=True,
+                                text=True
+                            )
+                            
+                            for sink_line in sinks_result.stdout.split('\n'):
+                                if 'bluez_sink' in sink_line and mac.replace(':', '_') in sink_line:
+                                    sink_name = sink_line.split()[1]
+                                    print(f"Found Bluetooth sink: {sink_name}")
+                                    # Do NOT set as default - we want to play TO phone, not FROM phone
+                                    break
+                            
+                            # Make sure local speakers are default (so phone audio plays here)
+                            print("Setting local speakers as default output...")
                             subprocess.run(
-                                ['pactl', 'set-card-profile', f'bluez_card.{mac.replace(":", "_")}', 'a2dp_sink'],
+                                ['pactl', 'set-default-sink', '0'],
                                 capture_output=True
                             )
-                            time.sleep(1)
+                            
+                            print("✅ Audio routing configured")
+                            print("   Phone audio → Computer speakers")
                             break
             elif not connected:
                 connected_device = None

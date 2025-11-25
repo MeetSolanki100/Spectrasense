@@ -67,6 +67,65 @@ class UnifiedBluetoothServer:
         payload = data[5:5+length].decode('utf-8', errors='ignore')
         return message_type, payload
     
+    def setup_wired_audio_output(self):
+        """Configure USB-C wired headphone as audio output"""
+        try:
+            # List all audio sinks
+            result = subprocess.run(
+                ['pactl', 'list', 'sinks', 'short'],
+                capture_output=True,
+                text=True
+            )
+            
+            print("\n🎧 Available audio devices:")
+            print(result.stdout)
+            
+            # Find USB or headphone device (common names for USB-C audio)
+            sink_id = None
+            for line in result.stdout.split('\n'):
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        # Look for USB audio, headphone, or external audio device
+                        device_name = line.lower()
+                        if any(keyword in device_name for keyword in 
+                               ['usb', 'headphone', 'headset', 'external', 'type-c', 'typec']):
+                            sink_id = parts[0]
+                            sink_name = parts[1]
+                            print(f"✅ Found wired headphone: {sink_name}")
+                            break
+            
+            if not sink_id:
+                # If no USB device found, get first non-monitor device
+                for line in result.stdout.split('\n'):
+                    if line.strip() and 'monitor' not in line.lower():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            sink_id = parts[0]
+                            sink_name = parts[1]
+                            print(f"⚠️  Using default device: {sink_name}")
+                            break
+            
+            if sink_id:
+                # Set as default sink
+                subprocess.run(
+                    ['pactl', 'set-default-sink', sink_id],
+                    capture_output=True
+                )
+                
+                # Unmute and set volume
+                subprocess.run(['pactl', 'set-sink-mute', sink_id, '0'],
+                             capture_output=True)
+                subprocess.run(['pactl', 'set-sink-volume', sink_id, '100%'],
+                             capture_output=True)
+                
+                print(f"✅ Audio output set to device {sink_id}")
+            else:
+                print("⚠️  No suitable audio device found, using system default")
+                
+        except Exception as e:
+            print(f"⚠️  Wired audio setup warning: {e}")
+    
     def setup_audio_server(self):
         """Configure PulseAudio for Bluetooth audio receiving"""
         print("\n🔊 Configuring audio server...")
@@ -122,14 +181,20 @@ class UnifiedBluetoothServer:
         if self.audio_configured:
             return
         
-        print(f"\n🎧 Configuring audio for {phone_address}...")
+        # Extract MAC address if it's a tuple (address, port)
+        if isinstance(phone_address, tuple):
+            phone_mac = phone_address[0]
+        else:
+            phone_mac = phone_address
+        
+        print(f"\n🎧 Configuring audio for {phone_mac}...")
         
         try:
             # Wait for Bluetooth to register device
             time.sleep(2)
             
             # Get card name
-            card_name = f'bluez_card.{phone_address.replace(":", "_")}'
+            card_name = f'bluez_card.{phone_mac.replace(":", "_")}'
             
             # Set profile to a2dp_sink (receive audio from phone)
             result = subprocess.run(
@@ -147,12 +212,11 @@ class UnifiedBluetoothServer:
             
             time.sleep(1)
             
-            # Ensure local speakers are default (phone audio plays here)
-            subprocess.run(['pactl', 'set-default-sink', '0'],
-                         capture_output=True)
+            # Find and set USB-C wired headphone as default output
+            self.setup_wired_audio_output()
             
             self.audio_configured = True
-            print("✅ Phone audio configured - audio will play on computer speakers")
+            print("✅ Phone audio configured - audio will play on wired headphone")
             
         except Exception as e:
             print(f"⚠️  Audio setup warning: {e}")
